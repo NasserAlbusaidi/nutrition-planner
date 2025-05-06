@@ -1,61 +1,125 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+## Description
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+This web application helps endurance athletes (cyclists, runners, triathletes) plan their nutrition and hydration strategy for specific activities based on:
 
-## About Laravel
+* **Strava Routes:** Imports user's saved routes from Strava.
+* **Planned Effort:** Uses user's FTP and planned intensity (e.g., Endurance, Tempo, Threshold).
+* **Personal Profile:** Considers user's weight and qualitative sweat/salt loss perception.
+* **Weather Conditions:** Fetches hourly weather forecasts (temperature, humidity) for the route location and planned start time using the Open-Meteo API.
+* **Personal Pantry:** Uses a library of the user's preferred nutrition products (including seeded defaults).
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+The application calculates estimated energy expenditure, carbohydrate needs, and **weather-adjusted** fluid/sodium requirements. It then generates a time-based schedule suggesting specific products from the user's pantry to consume at set intervals throughout the activity.
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+This project was built to address the challenge of fueling correctly for endurance activities, especially in varying environmental conditions like the heat and humidity often experienced in Muscat, Oman.
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+## Features (MVP)
 
-## Learning Laravel
+* User Registration & Login (Laravel Breeze)
+* User Profile Management (Weight, FTP, Sweat/Salt Level)
+* Secure Strava Account Connection (OAuth 2.0 via Laravel Socialite)
+* Browse and Select Saved Strava Routes
+* Input Planned Activity Start Time & Intensity
+* Personal Nutrition Product Pantry (Add/Edit/Delete custom items)
+* Default Nutrition Products (Seeded common items like bananas, SIS gels)
+* Weather Forecast Integration (Open-Meteo API)
+* Calculation Engine:
+    * Estimates duration and average power.
+    * Calculates hourly carb targets based on intensity.
+    * Calculates baseline fluid/sodium needs based on profile.
+    * Adjusts fluid/sodium targets based on hourly weather forecast.
+    * Includes an hourly carbohydrate intake cap based on intensity.
+* Plan Generation Algorithm: Creates a time-based schedule using available pantry items.
+* Plan Viewer: Displays plan summary and detailed schedule.
+* Dashboard: Shows recent plans and quick links.
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+## Tech Stack
 
-You may also try the [Laravel Bootcamp](https://bootcamp.laravel.com), where you will be guided through building a modern Laravel application from scratch.
+* **Backend:** PHP / Laravel Framework
+* **Frontend:** Laravel Blade + Livewire + Alpine.js (via Laravel Breeze)
+* **Styling:** Tailwind CSS
+* **Database:** MySQL / PostgreSQL (Configurable via Laravel)
+* **APIs:**
+    * Strava API (OAuth, Routes, GPX Export)
+    * Open-Meteo API (Weather Forecast)
+* **Key Packages:**
+    * `laravel/socialite`
+    * `socialiteproviders/strava`
+    * `livewire/livewire`
+    * `sibyx/phpgpx`
 
-If you don't feel like reading, [Laracasts](https://laracasts.com) can help. Laracasts contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+## Installation
 
-## Laravel Sponsors
+1.  **Clone the repository:**
+    ```bash
+    git clone [your-repository-url]
+    cd nutrition-planner
+    ```
+2.  **Install PHP Dependencies:**
+    ```bash
+    composer install
+    ```
+3.  **Install Node.js Dependencies:**
+    ```bash
+    npm install
+    # or yarn install
+    ```
+4.  **Environment Setup:**
+    * Copy the example environment file: `cp .env.example .env`
+    * Generate an application key: `php artisan key:generate`
+    * Configure your database connection details (`DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`, etc.) in the `.env` file.
+    * Configure Strava API credentials (Get these from [Strava Developers](https://developers.strava.com/)):
+        ```dotenv
+        STRAVA_CLIENT_ID=your_strava_client_id
+        STRAVA_CLIENT_SECRET=your_strava_client_secret
+        STRAVA_REDIRECT_URI=${APP_URL}/strava/callback # Ensure APP_URL is set correctly
+        ```
+    * *(Optional: OpenWeatherMap API Key if you switch back)*
+        ```dotenv
+        # OPENWEATHERMAP_API_KEY=your_openweathermap_key
+        ```
+5.  **Database Migration & Seeding:**
+    * Create the database specified in your `.env` file.
+    * Run migrations: `php artisan migrate`
+    * Run seeders (to add default products): `php artisan db:seed`
+6.  **Build Frontend Assets:**
+    ```bash
+    npm run build
+    # or yarn build
+    ```
+7.  **Serve the Application:**
+    * Using Artisan: `php artisan serve`
+    * Or configure a local web server (Valet, Herd, Laragon, etc.) pointing to the `public` directory.
 
-We would like to extend our thanks to the following sponsors for funding Laravel development. If you are interested in becoming a sponsor, please visit the [Laravel Partners program](https://partners.laravel.com).
+## Usage
 
-### Premium Partners
+1.  Register for an account or log in.
+2.  Navigate to your **Profile** page and fill in your Weight, FTP, and estimated Sweat/Salt levels.
+3.  Connect your **Strava** account via the button on the Profile page.
+4.  Go to the **Pantry** page to add your specific nutrition products (gels, bars, drinks) or rely on the pre-seeded defaults.
+5.  Click **Create New Nutrition Plan** (from the Dashboard or Navbar).
+6.  Select a **Strava Route** from your list.
+7.  Enter the **Planned Start Date & Time** and the **Planned Intensity**.
+8.  Click **Generate Nutrition Plan**.
+9.  View the generated plan summary and detailed schedule.
 
-- **[Vehikl](https://vehikl.com/)**
-- **[Tighten Co.](https://tighten.co)**
-- **[Kirschbaum Development Group](https://kirschbaumdevelopment.com)**
-- **[64 Robots](https://64robots.com)**
-- **[Curotec](https://www.curotec.com/services/technologies/laravel/)**
-- **[DevSquad](https://devsquad.com/hire-laravel-developers)**
-- **[Redberry](https://redberry.international/laravel-development/)**
-- **[Active Logic](https://activelogic.com)**
+## API Keys & Services
+
+* **Strava:** Requires creating an API application at [Strava Developers](https://developers.strava.com/) to obtain a Client ID and Secret. Configure the callback URL correctly.
+* **Open-Meteo:** Used for weather forecasts. Currently does not require an API key for the forecast endpoint used.
+
+## Future Enhancements / TODO
+
+* Improve duration estimation logic (factor in elevation, allow user override).
+* Refine the `PlanGenerator` algorithm (better product selection, partial servings, etc.).
+* Allow manual activity input (duration/intensity without a Strava route).
+* Implement running support (using pace/HR zones).
+* Add user settings for carb/fluid/sodium preferences/limits.
+* Visualize weather forecast on plan input/view.
+* Implement proper testing (Unit, Feature).
+* Add ability to edit/delete generated plans.
+* Cache Strava routes/API responses.
+* Improve UI/UX based on user feedback.
 
 ## Contributing
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
-
-## Code of Conduct
-
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
-
-## Security Vulnerabilities
-
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
-
-## License
-
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+Contributions are welcome! Please feel free to submit pull requests or open issues.
