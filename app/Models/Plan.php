@@ -31,6 +31,10 @@ class Plan extends Model
         'estimated_distance_km',
         'estimated_elevation_m',
         'hourly_targets_data',
+        'recommended_total_carbs_g',
+        'recommended_total_fluid_ml',
+        'recommended_total_sodium_mg',
+        'plan_notes', // Ensure this is fillable if you store warnings here
     ];
 
     /**

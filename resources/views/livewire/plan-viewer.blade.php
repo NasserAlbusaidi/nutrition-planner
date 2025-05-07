@@ -22,24 +22,26 @@
 
 
             {{-- Plan Summary Card --}}
-            <div class="bg-white dark:bg-slate-800 overflow-hidden shadow-lg rounded-lg">
+            <div class="bg-white dark:bg-slate-800 overflow-hidden shadow-lg sm:rounded-lg">
                 <div class="p-6 border-b border-slate-200 dark:border-slate-700">
+                    {{-- Plan Title & Route Name ... --}}
                     <h3 class="text-xl sm:text-2xl font-bold text-slate-900 dark:text-slate-100 mb-2">
                         {{ $plan->name }}</h3>
+                    {{-- ... activity source info ... --}}
                     @if ($plan->strava_route_name || $plan->source === 'gpx')
                         <p class="text-sm text-slate-500 dark:text-slate-400 mb-6">Activity:
-                            {{ $plan->strava_route_name ?? $plan->routeName }} (Source: {{ Str::upper($plan->source) }})
-                            @if ($plan->strava_route_id)
-                                [ID: {{ $plan->strava_route_id }}]
-                            @endif
+                            {{ $plan->strava_route_name ?? ($plan->routeName ?? 'N/A') }} (Source:
+                            {{ Str::upper($plan->source) }})
                         </p>
                     @else
                         <p class="text-sm text-slate-500 dark:text-slate-400 mb-6">Activity Source:
                             {{ Str::title($plan->source) }}</p>
                     @endif
 
-                    <div class="grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-6 text-sm"> {{-- Increased gap-y --}}
-                        {{-- Use primary accent color (e.g., cyan) for icons --}}
+                    {{-- Grid for Plan Details -- adjust grid-cols as needed --}}
+                    <div class="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-x-6 gap-y-6 text-sm">
+                        {{-- e.g., 4 cols on xl --}}
+                        {{-- Start --}}
                         <div class="flex items-center space-x-3"><x-heroicon-o-calendar-days
                                 class="h-6 w-6 text-cyan-600 dark:text-cyan-400 flex-shrink-0" />
                             <div><span
@@ -47,6 +49,7 @@
                                     class="font-medium text-slate-800 dark:text-slate-200">{{ $plan->planned_start_time->format('Y-m-d H:i') }}</span>
                             </div>
                         </div>
+                        {{-- Est. Duration --}}
                         <div class="flex items-center space-x-3"><x-heroicon-o-clock
                                 class="h-6 w-6 text-cyan-600 dark:text-cyan-400 flex-shrink-0" />
                             <div><span class="block text-xs font-medium text-slate-500 dark:text-slate-400">Est.
@@ -54,6 +57,7 @@
                                     class="font-medium text-slate-800 dark:text-slate-200">{{ $this->formatDuration($plan->estimated_duration_seconds) }}</span>
                             </div>
                         </div>
+                        {{-- Intensity --}}
                         <div class="flex items-center space-x-3"><x-heroicon-o-scale
                                 class="h-6 w-6 text-cyan-600 dark:text-cyan-400 flex-shrink-0" />
                             <div><span
@@ -61,6 +65,17 @@
                                     class="font-medium text-slate-800 dark:text-slate-200">{{ Str::title(str_replace('_', ' ', $plan->planned_intensity)) }}</span>
                             </div>
                         </div>
+
+                        {{-- *** NEW: Estimated Time of Arrival (ETA) *** --}}
+                        <div class="flex items-center space-x-3">
+                            <x-heroicon-o-flag class="h-6 w-6 text-cyan-600 dark:text-cyan-400 flex-shrink-0" />
+                            <div><span class="block text-xs font-medium text-slate-500 dark:text-slate-400">Est. Arrival
+                                    (ETA)</span><span
+                                    class="font-medium text-slate-800 dark:text-slate-200">{{ $this->estimatedTimeOfArrival }}</span>
+                            </div>
+                        </div>
+
+                        {{-- Est. Avg Power --}}
                         <div class="flex items-center space-x-3"><x-heroicon-o-bolt
                                 class="h-6 w-6 text-cyan-600 dark:text-cyan-400 flex-shrink-0" />
                             <div><span class="block text-xs font-medium text-slate-500 dark:text-slate-400">Est. Avg
@@ -68,31 +83,122 @@
                                     class="font-medium text-slate-800 dark:text-slate-200">{{ $plan->estimated_avg_power_watts ? $plan->estimated_avg_power_watts . ' W' : 'N/A' }}</span>
                             </div>
                         </div>
-                        <div class="flex items-center space-x-3 col-span-2 sm:col-span-1"><x-heroicon-o-cloud
+
+                        {{-- *** NEW: Estimated Average Speed *** --}}
+                        <div class="flex items-center space-x-3">
+                            <x-heroicon-o-rocket-launch
                                 class="h-6 w-6 text-cyan-600 dark:text-cyan-400 flex-shrink-0" />
+                            <div><span class="block text-xs font-medium text-slate-500 dark:text-slate-400">Est. Avg
+                                    Speed</span><span
+                                    class="font-medium text-slate-800 dark:text-slate-200">{{ $this->estimatedAverageSpeed }}</span>
+                            </div>
+                        </div>
+
+                        {{-- Weather (might make this col-span-2 if you have an odd number overall or want it wider) --}}
+                        <div class="flex items-center space-x-3 md:col-span-2 xl:col-span-1"> {{-- Example: take remaining space or force wider --}}
+                            <x-heroicon-o-cloud class="h-6 w-6 text-cyan-600 dark:text-cyan-400 flex-shrink-0" />
                             <div><span
                                     class="block text-xs font-medium text-slate-500 dark:text-slate-400">Weather</span><span
                                     class="font-medium text-slate-800 dark:text-slate-200">{{ $plan->weather_summary ?? 'Unavailable' }}</span>
                             </div>
                         </div>
+                        {{-- You might want to explicitly add Distance here too if not clear from "Activity" name --}}
+                        <div class="flex items-center space-x-3">
+                            <x-heroicon-o-map-pin class="h-6 w-6 text-cyan-600 dark:text-cyan-400 flex-shrink-0" />
+                            <div><span
+                                    class="block text-xs font-medium text-slate-500 dark:text-slate-400">Distance</span><span
+                                    class="font-medium text-slate-800 dark:text-slate-200">{{ number_format($plan->estimated_distance_km ?? 0, 1) }}
+                                    km</span></div>
+                        </div>
+
                     </div>
                 </div>
                 {{-- Estimated Totals Footer --}}
                 <div
-                    class="p-4 bg-slate-50 dark:bg-slate-900/50 border-t border-slate-200 dark:border-slate-700 flex flex-wrap justify-center sm:justify-start gap-x-6 gap-y-2">
-                    <span class="font-semibold text-slate-700 dark:text-slate-300 text-sm">Plan Totals:</span>
-                    <span class="inline-flex items-center text-sm text-slate-800 dark:text-slate-200 whitespace-nowrap"
-                        title="{{ number_format($plan->estimated_total_carbs_g, 1) }}g Carbs"><x-heroicon-s-cube
-                            class="h-5 w-5 mr-1.5 text-amber-500 dark:text-amber-400" />
-                        {{ number_format($plan->estimated_total_carbs_g, 0) }}g</span>
-                    <span class="inline-flex items-center text-sm text-slate-800 dark:text-slate-200 whitespace-nowrap"
-                        title="{{ number_format($plan->estimated_total_fluid_ml) }}ml Fluid"><x-heroicon-s-beaker
-                            class="h-5 w-5 mr-1.5 text-sky-500 dark:text-sky-400" />
-                        {{ number_format($plan->estimated_total_fluid_ml) }}ml</span>
-                    <span class="inline-flex items-center text-sm text-slate-800 dark:text-slate-200 whitespace-nowrap"
-                        title="{{ number_format($plan->estimated_total_sodium_mg) }}mg Sodium"><x-heroicon-s-sparkles
-                            class="h-5 w-5 mr-1.5 text-violet-400 dark:text-violet-500" />
-                        {{ number_format($plan->estimated_total_sodium_mg) }}mg</span>
+                    class="p-4 bg-slate-50 dark:bg-slate-900/50 border-t border-slate-200 dark:border-slate-700">
+                    <div class="flex flex-wrap justify-center sm:justify-start gap-x-6 gap-y-3 items-center">
+                        <span class="font-semibold text-slate-700 dark:text-slate-300 text-sm">Plan Totals:</span>
+
+                        {{-- Carbs Total --}}
+                        <span class="inline-flex items-center text-sm text-slate-800 dark:text-slate-200 whitespace-nowrap"
+                            title="Scheduled: {{ number_format($plan->estimated_total_carbs_g, 1) }}g Carbs / Recommended: {{ number_format($plan->recommended_total_carbs_g, 1) }}g Carbs">
+                            <x-heroicon-s-cube class="h-5 w-5 mr-1.5 text-amber-500 dark:text-amber-400" />
+                            {{ number_format($plan->estimated_total_carbs_g, 0) }}g
+                            @if ($plan->recommended_total_carbs_g) {{-- Only show if recommended exists --}}
+                                <span class="text-xs text-slate-500 dark:text-slate-400 ml-1">/ {{ number_format($plan->recommended_total_carbs_g, 0) }}g</span>
+                            @endif
+                        </span>
+
+                        {{-- Fluid Total --}}
+                        <span class="inline-flex items-center text-sm text-slate-800 dark:text-slate-200 whitespace-nowrap"
+                            title="Scheduled: {{ number_format($plan->estimated_total_fluid_ml) }}ml Fluid / Recommended: {{ number_format($plan->recommended_total_fluid_ml) }}ml Fluid">
+                            <x-heroicon-s-beaker class="h-5 w-5 mr-1.5 text-sky-500 dark:text-sky-400" />
+                            {{ number_format($plan->estimated_total_fluid_ml) }}ml
+                            @if ($plan->recommended_total_fluid_ml)
+                                <span class="text-xs text-slate-500 dark:text-slate-400 ml-1">/ {{ number_format($plan->recommended_total_fluid_ml) }}ml</span>
+                            @endif
+                        </span>
+
+                        {{-- Sodium Total --}}
+                        <span class="inline-flex items-center text-sm text-slate-800 dark:text-slate-200 whitespace-nowrap"
+                            title="Scheduled: {{ number_format($plan->estimated_total_sodium_mg) }}mg Sodium / Recommended: {{ number_format($plan->recommended_total_sodium_mg) }}mg Sodium">
+                            <x-heroicon-s-sparkles class="h-5 w-5 mr-1.5 text-violet-400 dark:text-violet-500" />
+                            {{ number_format($plan->estimated_total_sodium_mg) }}mg
+                            @if ($plan->recommended_total_sodium_mg)
+                                <span class="text-xs text-slate-500 dark:text-slate-400 ml-1">/ {{ number_format($plan->recommended_total_sodium_mg) }}mg</span>
+                            @endif
+                        </span>
+                    </div>
+
+                    {{-- Conditional Warning Message for Deficits --}}
+                    @php
+                        $showDeficitMessage = false;
+                        $deficitMessages = [];
+                        $deficitThreshold = 25; // Percentage deficit to trigger warning
+
+                        if ($plan->recommended_total_carbs_g && $plan->recommended_total_carbs_g > 0) {
+                            $carbDeficitPercentage = (($plan->recommended_total_carbs_g - $plan->estimated_total_carbs_g) / $plan->recommended_total_carbs_g) * 100;
+                            if ($carbDeficitPercentage > $deficitThreshold) {
+                                $deficitMessages[] = 'carbs';
+                                $showDeficitMessage = true;
+                            }
+                        }
+                        if ($plan->recommended_total_fluid_ml && $plan->recommended_total_fluid_ml > 0) {
+                            $fluidDeficitPercentage = (($plan->recommended_total_fluid_ml - $plan->estimated_total_fluid_ml) / $plan->recommended_total_fluid_ml) * 100;
+                            if ($fluidDeficitPercentage > $deficitThreshold) {
+                                $deficitMessages[] = 'fluid';
+                                $showDeficitMessage = true;
+                            }
+                        }
+                        if ($plan->recommended_total_sodium_mg && $plan->recommended_total_sodium_mg > 0) {
+                            $sodiumDeficitPercentage = (($plan->recommended_total_sodium_mg - $plan->estimated_total_sodium_mg) / $plan->recommended_total_sodium_mg) * 100;
+                            if ($sodiumDeficitPercentage > $deficitThreshold) {
+                                $deficitMessages[] = 'sodium';
+                                $showDeficitMessage = true;
+                            }
+                        }
+                    @endphp
+
+                    @if ($showDeficitMessage)
+                        <div class="mt-3 text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-800/30 p-2 rounded-md flex items-start">
+                            <x-heroicon-s-exclamation-triangle class="h-4 w-4 mr-2 mt-0.5 flex-shrink-0" />
+                            <span>
+                                Note: Your scheduled plan is significantly lower than recommended for
+                                @foreach ($deficitMessages as $nutrient)
+                                    {{ $nutrient }}@if (!$loop->last && count($deficitMessages) > 2), @elseif (!$loop->last && count($deficitMessages) == 2) and @endif
+                                @endforeach.
+                                This is based on your selected items. Review and consider adjusting for optimal fueling.
+                            </span>
+                        </div>
+                    @endif
+
+                    {{-- Display specific warnings from plan_notes (if any) --}}
+                    @if (!empty($plan->plan_notes))
+                        <div class="mt-3 text-xs text-slate-600 dark:text-slate-400 bg-slate-100 dark:bg-slate-700/50 p-2 rounded-md">
+                            <p class="font-semibold mb-1">Additional Plan Notes:</p>
+                            <div style="white-space: pre-wrap;">{{ $plan->plan_notes }}</div>
+                        </div>
+                    @endif
                 </div>
             </div>
 

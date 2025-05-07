@@ -87,6 +87,36 @@ class PlanViewer extends Component
     }
 
     /**
+     * Calculate Estimated Average Speed.
+     * Needs $plan->estimated_distance_km and $plan->estimated_duration_seconds.
+     */
+    public function getEstimatedAverageSpeedProperty(): ?string // Using Livewire computed property
+    {
+
+
+        if ($this->plan->estimated_distance_km > 0 && $this->plan->estimated_duration_seconds > 0) {
+            $durationInHours = $this->plan->estimated_duration_seconds / 3600;
+            $speed = $this->plan->estimated_distance_km / $durationInHours;
+            return number_format($speed, 1) . ' km/h';
+        }
+        return 'N/A';
+    }
+
+    /**
+     * Calculate Estimated Time of Arrival.
+     */
+    public function getEstimatedTimeOfArrivalProperty(): ?string // Using Livewire computed property
+    {
+        if ($this->plan->planned_start_time && $this->plan->estimated_duration_seconds > 0) {
+            return $this->plan->planned_start_time
+                ->copy()
+                ->addSeconds($this->plan->estimated_duration_seconds)
+                ->format('Y-m-d H:i'); // Or your preferred format
+        }
+        return 'N/A';
+    }
+
+    /**
      * Get an appropriate Heroicon name based on the plan item.
      */
     public function getItemIcon(object $item): string // $item is PlanItem model instance
@@ -152,69 +182,83 @@ class PlanViewer extends Component
      */
     protected function calculatePreparationSummary(Collection $items): array
     {
-        $summary = ['bottles_needed' => 0, 'products' => [], 'total_items' => $items->count()]; // Changed key to 'products'
+        $summary = ['bottles_needed' => 0, 'products' => [], 'total_items' => $items->count()];
         $bottleSizeMl = 750;
         $totalFluidMl = 0;
-        $productQuantities = []; // Keyed by $productId
+        $productQuantities = [];
 
         foreach ($items as $item) {
             $totalFluidMl += $item->calculated_fluid_ml ?? 0;
 
-            // Use a more robust key: Product ID if available, otherwise the specific name override, fallback to generic unknown
             $productId = $item->product_id
-                ?? ($item->product_name_override === 'Plain Water' ? 'WATER' : null) // Specific key for water
-                ?? $item->product_name_override // Use override if product_id is null but name exists
-                ?? 'unknown_' . ($item->instruction_type ?? Str::random(5)); // Fallback key
+                ?? ($item->product_name_override === 'Plain Water' ? 'WATER' : null)
+                ?? $item->product_name_override
+                ?? 'unknown_' . ($item->instruction_type ?? Str::random(5));
 
-            // Initialize product entry if not seen before
             if (!isset($productQuantities[$productId])) {
-                $productType = 'unknown'; // Default type
-                $servingDesc = $item->quantity_description ?? '1 serving'; // Get description from item first
-                $unit = 'item'; // Default unit
+                $resolvedName = $item->product_name;
+                if (empty($resolvedName)) {
+                    $resolvedName = $item->product_name_override;
+                }
+                if (empty($resolvedName) && $item->relationLoaded('product') && $item->product && !empty($item->product->name)) {
+                    $resolvedName = $item->product->name;
+                }
+
+                $productType = 'unknown';
+                $isWaterByIdKey = ($productId === 'WATER');
+
+                if ($isWaterByIdKey) {
+                    $productType = Product::TYPE_PLAIN_WATER;
+                    if (empty($resolvedName)) {
+                        $resolvedName = 'Plain Water';
+                    }
+                } elseif ($item->relationLoaded('product') && $item->product) {
+                    $productType = $item->product->type;
+                    if ($productType === Product::TYPE_PLAIN_WATER && empty($resolvedName)) {
+                        $resolvedName = 'Plain Water';
+                    }
+                }
+
+                $finalName = !empty($resolvedName) ? $resolvedName : 'Unknown Item';
+
+                $unit = 'item';
                 $servingGrams = null;
                 $servingMixMl = null;
 
-                if ($productId === 'WATER') {
-                    $productType = Product::TYPE_PLAIN_WATER;
-                    $unit = 'ml'; // Unit is ml for water summary
-                    $servingDesc = 'Total Volume'; // Description for water summary
+                if ($isWaterByIdKey) {
+                    $unit = 'ml';
                 } elseif ($item->relationLoaded('product') && $item->product) {
-                    // Get details from the actual product
-                    $productType = $item->product->type;
-                    $servingDesc = $item->product->serving_size_description ?? '1 serving'; // Use product's description
-                    $unit = $item->product->serving_size_units ?? 'item'; // Use product's units
-                    $servingGrams = $item->product->serving_size_g; // Powder weight per serving (if applicable)
-                    $servingMixMl = $item->product->serving_size_ml; // Water volume per serving (if applicable)
+                    $unit = $item->product->serving_size_units ?? 'item';
+                    $servingGrams = $item->product->serving_size_g;
+                    $servingMixMl = $item->product->serving_size_ml;
                 }
 
                 $productQuantities[$productId] = [
-                    'product_id' => $item->product_id, // Store the original ID if available
-                    'name' => $item->product_name ?? $item->product_name_override ?? 'Unknown Item',
+                    'product_id' => $item->product_id,
+                    'name' => $finalName,
                     'type' => $productType,
-                    'unit_description' => $unit, // Use extracted unit
+                    'unit_description' => $unit,
                     'count' => 0,
                     'total_carbs' => 0.0,
                     'total_fluid' => 0.0,
                     'total_sodium' => 0.0,
                     'total_grams_powder' => 0.0,
-                    'std_serving_grams_powder' => $servingGrams, // Store standard powder weight
-                    'std_serving_mix_volume_ml' => $servingMixMl, // Store standard mix volume
+                    'std_serving_grams_powder' => $servingGrams,
+                    'std_serving_mix_volume_ml' => $servingMixMl,
                 ];
             }
 
-            // Increment count & add nutrients
             $productQuantities[$productId]['count']++;
             $productQuantities[$productId]['total_carbs'] += $item->calculated_carbs_g ?? 0;
             $productQuantities[$productId]['total_fluid'] += $item->calculated_fluid_ml ?? 0;
             $productQuantities[$productId]['total_sodium'] += $item->calculated_sodium_mg ?? 0;
 
-            // Calculate powder weight for drink mixes
             if ($productQuantities[$productId]['type'] === Product::TYPE_DRINK_MIX) {
                 $baseServMl = $productQuantities[$productId]['std_serving_mix_volume_ml'];
                 $baseServGrams = $productQuantities[$productId]['std_serving_grams_powder'];
                 $consumedMl = $item->calculated_fluid_ml ?? 0;
 
-                if ($baseServMl && $baseServGrams && $consumedMl > 0) {
+                if ($baseServMl && $baseServGrams && $consumedMl > 0 && $baseServMl > 0) { // Added $baseServMl > 0 for safety
                     $proportion = $consumedMl / $baseServMl;
                     $productQuantities[$productId]['total_grams_powder'] += ($baseServGrams * $proportion);
                 }
@@ -222,49 +266,61 @@ class PlanViewer extends Component
         }
 
         // --- Format the display string for each product ---
-        foreach ($productQuantities as $id => &$prodInfo) { // Use reference
-            $productType = $prodInfo['type'];
-            $unit = $prodInfo['unit_description'];
+        foreach ($productQuantities as $id => &$prodInfo) {
+            // Initialize keys to ensure they always exist
+            $prodInfo['total_qty_desc'] = 'N/A'; // Default value if something goes wrong
+            $prodInfo['notes'] = '';         // Default value
 
-            if ($productType === Product::TYPE_DRINK_MIX) {
-                $totalGrams = round($prodInfo['total_grams_powder']);
-                $servingsEstimate = '?';
-                if (($prodInfo['std_serving_grams_powder'] ?? 0) > 0) {
-                    $servingsEstimate = round($totalGrams / $prodInfo['std_serving_grams_powder'], 1);
-                }
-                // Focus on powder and servings/units for checklist
-                $prodInfo['total_qty_desc'] = "{$totalGrams}g total powder (~{$servingsEstimate} {$unit}s)"; // Assuming unit is 'scoop' etc.
-                // Note showing total nutrients FROM THIS DRINK
-                $prodInfo['notes'] = sprintf(
-                    "Provides approx. %dg C, %dml F, %dmg S",
-                    round($prodInfo['total_carbs']),
-                    round($prodInfo['total_fluid']),
-                    round($prodInfo['total_sodium'])
-                );
-            } elseif ($productType === Product::TYPE_PLAIN_WATER) {
-                $prodInfo['total_qty_desc'] = round($prodInfo['total_fluid']) . "ml total";
-                $prodInfo['notes'] = ""; // No specific notes for plain water totals
-            } else { // Gels, Bars, etc. - Use count and extracted unit name
-                $count = $prodInfo['count'];
-                // Attempt to strip leading numbers/units from the unit description before pluralizing
-                $baseUnit = trim(preg_replace('/^[0-9.]+\s*/', '', $unit)); // Remove leading '1 ' etc.
-                if (empty($baseUnit)) $baseUnit = 'item'; // Fallback
-                $pluralUnit = ($count > 1) ? Str::plural($baseUnit) : $baseUnit; // Pluralize the base unit
-                $prodInfo['total_qty_desc'] = $count . " " . $pluralUnit; // e.g., "5 packets", "3 bars", "1 item"
+            // Defensively get type and unit, defaulting if somehow not set
+            $productType = $prodInfo['type'] ?? 'unknown';
+            $unit = $prodInfo['unit_description'] ?? 'item';
 
-                if ($prodInfo['count'] > 0) {
-                    $avgCarbs = round($prodInfo['total_carbs'] / $prodInfo['count']);
-                    $avgSodium = round($prodInfo['total_sodium'] / $prodInfo['count']);
-                    $prodInfo['notes'] = "Avg: {$avgCarbs}g C, {$avgSodium}mg S per {$baseUnit}."; // Use base unit singular
-                } else {
-                    $prodInfo['notes'] = "";
+            try {
+                if ($productType === Product::TYPE_DRINK_MIX) {
+                    $totalGrams = round($prodInfo['total_grams_powder'] ?? 0);
+                    $servingsEstimate = '?';
+                    $stdServingGrams = $prodInfo['std_serving_grams_powder'] ?? 0;
+                    if ($stdServingGrams > 0) {
+                        $servingsEstimate = round($totalGrams / $stdServingGrams, 1);
+                    }
+                    $prodInfo['total_qty_desc'] = "{$totalGrams}g total powder (~{$servingsEstimate} {$unit}s)";
+                    $prodInfo['notes'] = sprintf(
+                        "Provides approx. %dg C, %dml F, %dmg S",
+                        round($prodInfo['total_carbs'] ?? 0),
+                        round($prodInfo['total_fluid'] ?? 0),
+                        round($prodInfo['total_sodium'] ?? 0)
+                    );
+                } elseif ($productType === Product::TYPE_PLAIN_WATER) {
+                    $prodInfo['total_qty_desc'] = round($prodInfo['total_fluid'] ?? 0) . "ml total";
+                    // notes remains ""
+                } else { // Gels, Bars, 'unknown' type etc.
+                    $count = $prodInfo['count'] ?? 0;
+                    $baseUnit = trim(preg_replace('/^[0-9.]+\s*/', '', (string)$unit));
+                    if (empty($baseUnit)) $baseUnit = 'item';
+                    // Pluralize for 0, and counts > 1. For 1, use singular.
+                    $pluralUnit = ($count === 1) ? $baseUnit : Str::plural($baseUnit);
+                    $prodInfo['total_qty_desc'] = $count . " " . $pluralUnit;
+
+                    if ($count > 0) {
+                        $avgCarbs = round(($prodInfo['total_carbs'] ?? 0) / $count);
+                        $avgSodium = round(($prodInfo['total_sodium'] ?? 0) / $count);
+                        $prodInfo['notes'] = "Avg: {$avgCarbs}g C, {$avgSodium}mg S per {$baseUnit}.";
+                    } else {
+                        // notes remains ""
+                    }
                 }
+            } catch (\Throwable $e) {
+                // Log the error if you have a logging mechanism, e.g., \Log::error(...)
+                // For UI, it will show 'N/A' or you can set a specific error message
+                $prodInfo['total_qty_desc'] = 'Error processing item details';
+                // Optionally set notes to the error message for debugging, but be cautious with exposing raw errors to UI
+                // $prodInfo['notes'] = 'Error: ' . $e->getMessage();
             }
         }
-        unset($prodInfo);
+        unset($prodInfo); // Important when using references in foreach
 
-        $summary['bottles_needed'] = ($bottleSizeMl > 0) ? ceil($totalFluidMl / $bottleSizeMl) : 0;
-        $summary['products'] = array_values($productQuantities); // Use 'products' key
+        $summary['bottles_needed'] = ($bottleSizeMl > 0 && $totalFluidMl > 0) ? ceil($totalFluidMl / $bottleSizeMl) : 0;
+        $summary['products'] = array_values($productQuantities);
 
         return $summary;
     }
