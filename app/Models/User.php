@@ -78,6 +78,12 @@ class User extends Authenticatable
         return $this->hasMany(Product::class);
     }
 
+    /**
+     * Get the user's strava ID
+     */
+    public function stravaId() {
+        return $this->strava_user_id;
+    }
 
 
 

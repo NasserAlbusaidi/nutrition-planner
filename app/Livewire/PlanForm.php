@@ -3,10 +3,10 @@
 namespace App\Livewire;
 
 use App\Models\Plan;
+use App\Models\Product;
 use App\Services\NutritionCalculator;
 use App\Services\PlanGenerator;
-use App\Models\Product;
-use App\Services\StravaService; // Ensure StravaService is imported
+use App\Services\StravaService;
 use App\Services\WeatherService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
@@ -24,16 +24,15 @@ class PlanForm extends Component
     public float $routeDistanceKm;
     public float $routeElevationM;
 
-    // Property to store the polyline fetched in mount
-    public string $fetchedPolyline = '';
+    public string $routeSource = 'strava'; // Default source
+    public ?float $routeStartLat = null;   // For GPX start coords
+    public ?float $routeStartLng = null;   // For GPX start coords
+
+    public string $fetchedPolyline = ''; // For map preview on this page
 
     // Form properties
     public $planned_start_datetime;
     public $planned_intensity;
-
-    // *** REMOVED redundant property ***
-    // public string $routePolyline;
-
 
     public $intensityOptions = [
         'easy' => 'Easy (<65% FTP)',
@@ -47,7 +46,7 @@ class PlanForm extends Component
     protected function rules()
     {
         return [
-            'planned_start_datetime' => ['required', 'date_format:Y-m-d\TH:i', 'after:now'],
+            'planned_start_datetime' => ['required', 'date_format:Y-m-d\TH:i', 'after_or_equal:now'], // after_or_equal:now is usually better
             'planned_intensity' => ['required', Rule::in(array_keys($this->intensityOptions))],
         ];
     }
@@ -55,104 +54,110 @@ class PlanForm extends Component
     public function mount(
         string $routeId,
         string $routeName,
-        float $distance,
+        float $distance,    // This should be in KM as prepared by RouteSelector
         float $elevation,
-        StravaService $stravaService // Inject StravaService
+        StravaService $stravaService, // Keep for Strava source
+        ?string $source = null,       // Default to null, handle below
+        ?float $startLat = null,
+        ?float $startLng = null
     ) {
         $this->routeId = $routeId;
         $this->routeName = urldecode($routeName);
-        $this->routeDistanceKm = $distance;
+        $this->routeDistanceKm = $distance; // Ensure this is correctly passed in KM
         $this->routeElevationM = $elevation;
-        $this->planned_start_datetime = Carbon::tomorrow()->addHours(8)->format('Y-m-d\TH:i');
+        $this->planned_start_datetime = Carbon::now()->addDay()->setHour(8)->setMinute(0)->setSecond(0)->format('Y-m-d\TH:i'); // Default to tomorrow 8 AM
 
-        Log::info('PlanForm Mounted for Route:', [
+        $this->routeSource = $source ?? 'strava'; // If source isn't passed, assume strava
+        $this->routeStartLat = $startLat;
+        $this->routeStartLng = $startLng;
+
+        Log::info('PlanForm Mounted:', [
             'routeId' => $this->routeId,
             'name' => $this->routeName,
-            'distance' => $this->routeDistanceKm,
-            'elevation' => $this->routeElevationM,
+            'distanceKm' => $this->routeDistanceKm,
+            'elevationM' => $this->routeElevationM,
+            'source' => $this->routeSource,
+            'startLat' => $this->routeStartLat,
+            'startLng' => $this->routeStartLng,
         ]);
 
-         // Fetch route details
-         Log::info("PlanForm: Fetching route details from Strava for ID {$this->routeId}");
-         $user = Auth::user();
-         $allRoutes = $stravaService->getUserRoutes($user);
-         $foundPolyline = null; // Temporary variable
+        // Fetch polyline for map preview on *this PlanForm page* (only for Strava routes)
+        if ($this->routeSource === 'strava') {
+            Log::info("PlanForm (Strava Source): Fetching polyline for map preview for Strava Route ID {$this->routeId}");
+            $user = Auth::user();
+            if ($user) {
+                $allRoutes = $stravaService->getUserRoutes($user);
+                $foundPolyline = null;
+                if ($allRoutes !== null) {
+                    // Attempt to match Strava ID (which can be numeric or string)
+                    $routeDetails = collect($allRoutes)->first(function ($value) {
+                        return (string)($value['id_str'] ?? $value['id']) === (string)$this->routeId;
+                    });
 
-         if ($allRoutes !== null) {
-             $routeDetails = collect($allRoutes)->firstWhere('id', $this->routeId);
-             // Get polyline if found, otherwise null
-             $foundPolyline = $routeDetails['summary_polyline'] ?? null;
-         } else {
-             Log::error("PlanForm: Failed to fetch routes from StravaService in mount.");
-             session()->flash('error', 'Could not retrieve route details for map display.');
-         }
+                    if ($routeDetails) {
+                        $foundPolyline = $routeDetails['map']['summary_polyline'] ?? $routeDetails['summary_polyline'] ?? null;
+                    }
+                }
+                if ($foundPolyline) {
+                    $this->fetchedPolyline = $foundPolyline;
+                    Log::info("PlanForm (Strava Source): Successfully fetched polyline for map preview.", ['length' => strlen($this->fetchedPolyline)]);
+                } else {
+                    Log::warning("PlanForm (Strava Source): Could not fetch polyline for Strava Route ID {$this->routeId} for map preview.");
+                    $this->fetchedPolyline = '';
+                    // Optionally flash a message if map preview is critical
+                    // session()->flash('warning', 'Map preview for this Strava route is unavailable.');
+                }
+            } else {
+                 Log::error("PlanForm (Strava Source): User not authenticated in mount. Cannot fetch Strava polyline.");
+                 $this->fetchedPolyline = '';
+            }
+        } elseif ($this->routeSource === 'gpx') {
+            Log::info("PlanForm (GPX Source): Route is from GPX. Map preview on this page currently not supported (requires passing/generating polyline from GPX).");
+            $this->fetchedPolyline = ''; // No Strava-style polyline readily available here for the map div.
+        } else {
+            Log::info("PlanForm (Unknown Source): Map preview will not be shown.");
+            $this->fetchedPolyline = '';
+        }
+    }
 
-         Log::debug("PlanForm Mount: Before assigning polyline", [
-            'allRoutes_type' => gettype($allRoutes),
-            'routeDetails_found' => !empty($routeDetails),
-            'foundPolyline_value' => $foundPolyline,
-            'foundPolyline_type' => gettype($foundPolyline)
-        ]);
-
-        $this->fetchedPolyline = $foundPolyline ?? '';
-        Log::debug("PlanForm Mount: AFTER assigning polyline", [
-            'fetchedPolyline_value' => $this->fetchedPolyline,
-            'fetchedPolyline_type' => gettype($this->fetchedPolyline),
-        ]);
-         if ($this->fetchedPolyline !== '') {
-             Log::info("PlanForm: Successfully fetched polyline.", ['length' => strlen($this->fetchedPolyline)]);
-         } else {
-             Log::warning("PlanForm: Could not fetch polyline for route ID {$this->routeId}. Property set to empty string.");
-         }
-     }
-    /**
-     * Estimate duration in seconds.
-     */
+    // ... estimateDurationSeconds method ...
     protected function estimateDurationSeconds(float $distanceKm, float $elevationM, string $intensityKey): int
     {
         $baseSpeedKph = match ($intensityKey) {
-             'easy' => 22,
-             'endurance' => 26,
-             'tempo' => 30,
-             'threshold' => 33,
-             'race_pace' => 33,
-             'steady_group_ride' => 28,
+             'easy' => 22, 'endurance' => 26, 'tempo' => 30,
+             'threshold' => 33, 'race_pace' => 33, 'steady_group_ride' => 28,
              default => 25,
          };
-        $elevationFactor = ($distanceKm > 0) ? ($elevationM / $distanceKm) / 10 : 0;
-        $adjustedSpeedKph = max(10, $baseSpeedKph - ($elevationFactor * 10));
-        Log::debug("Duration Estimation:", compact('distanceKm', 'elevationM', 'intensityKey', 'baseSpeedKph', 'adjustedSpeedKph'));
-        if ($adjustedSpeedKph <= 0) return 3600;
+        $elevationFactor = ($distanceKm > 0) ? ($elevationM / ($distanceKm * 1000)) * 100 : 0; // Slope percentage approximation (m / m * 100)
+                                                                                           // More typical way: ($elevationM / $distanceKm) / 10 for factor
+        $speedReductionFactor = $elevationM / ($distanceKm * 10); // Higher number for more hills, e.g. 1000m over 100km = 1
+        $adjustedSpeedKph = max(5, $baseSpeedKph * (1 - ($speedReductionFactor / 50))); // Reduce by up to 2% per "factor unit"
+
+        Log::debug("Duration Estimation:", compact('distanceKm', 'elevationM', 'intensityKey', 'baseSpeedKph', 'speedReductionFactor', 'adjustedSpeedKph'));
+        if ($adjustedSpeedKph <= 0) return 3600 * 2; // Default to 2 hours if something is very wrong
         $durationHours = $distanceKm / $adjustedSpeedKph;
         return (int) round($durationHours * 3600);
     }
 
-    /**
-     * Get start coordinates from GPX content.
-     */
+
+    // ... getStartCoordinatesFromGpx method (this will be used if source is 'strava') ...
     protected function getStartCoordinatesFromGpx(string $gpxContent): ?array
     {
         try {
-            $gpx = new phpGPX();
-            $file = $gpx->parse($gpxContent);
+            $gpx = new phpGPX(); $file = $gpx->parse($gpxContent);
             if (!empty($file->tracks) && !empty($file->tracks[0]->segments) && !empty($file->tracks[0]->segments[0]->points)) {
                 $firstPoint = $file->tracks[0]->segments[0]->points[0];
                 return ['latitude' => $firstPoint->latitude, 'longitude' => $firstPoint->longitude];
+            } elseif (!empty($file->waypoints) && !empty($file->waypoints[0])) {
+                $firstPoint = $file->waypoints[0]; return ['latitude' => $firstPoint->latitude, 'longitude' => $firstPoint->longitude];
             } elseif (!empty($file->routes) && !empty($file->routes[0]->points)) {
-                $firstPoint = $file->routes[0]->points[0];
-                return ['latitude' => $firstPoint->latitude, 'longitude' => $firstPoint->longitude];
+                $firstPoint = $file->routes[0]->points[0]; return ['latitude' => $firstPoint->latitude, 'longitude' => $firstPoint->longitude];
             }
-            Log::warning("Could not find starting point in GPX data for route ID: {$this->routeId}");
-            return null;
-        } catch (\Exception $e) {
-            Log::error("Error parsing GPX for route ID: {$this->routeId}. Error: " . $e->getMessage());
-            return null;
-        }
+            Log::warning("Could not find starting point in GPX data for route ID: {$this->routeId}"); return null;
+        } catch (\Exception $e) { Log::error("Error parsing GPX for route ID {$this->routeId}: " . $e->getMessage()); return null; }
     }
 
-    /**
-     * Generate and save the nutrition plan.
-     */
+
     public function generatePlan(
         StravaService $stravaService,
         WeatherService $weatherService,
@@ -161,144 +166,163 @@ class PlanForm extends Component
     ) {
         $validatedData = $this->validate();
         $user = Auth::user();
+        if (!$user) {
+            session()->flash('error', 'Authentication required to generate a plan.');
+            Log::warning("Unauthenticated user tried to generate plan.");
+            return;
+        }
         $startTime = Carbon::parse($validatedData['planned_start_datetime']);
+        $coordinates = null;
 
-        // 1. Fetch GPX & Coords
-        Log::info("Generating plan: Fetching GPX for route {$this->routeId}");
-        $gpxContent = $stravaService->getRouteGpx($user, $this->routeId);
-        if (!$gpxContent) { /* ... error handling ... */ return; }
-        $coordinates = $this->getStartCoordinatesFromGpx($gpxContent);
-        if (!$coordinates) { /* ... error handling ... */ return; }
-        Log::info("Generating plan: Found coordinates ({$coordinates['latitude']}, {$coordinates['longitude']})");
+        // 1. Determine Coordinates for Weather
+        if ($this->routeSource === 'strava') {
+            Log::info("GeneratePlan (Strava): Fetching GPX for weather coordinates. Route ID: {$this->routeId}");
+            $gpxContent = $stravaService->getRouteGpx($user, $this->routeId);
+            if (!$gpxContent) {
+                session()->flash('error', 'Could not retrieve Strava route data (GPX) for weather. Please try again.');
+                return;
+            }
+            $coordinates = $this->getStartCoordinatesFromGpx($gpxContent);
+        } elseif ($this->routeSource === 'gpx') {
+            if ($this->routeStartLat && $this->routeStartLng) {
+                $coordinates = ['latitude' => $this->routeStartLat, 'longitude' => $this->routeStartLng];
+                Log::info("GeneratePlan (GPX): Using provided start coordinates for weather.", $coordinates);
+            } else {
+                Log::warning("GeneratePlan (GPX): Start coordinates not available from uploaded GPX file. Weather will use defaults.");
+                // Don't return; allow plan generation but NutritionCalculator must handle null forecast
+            }
+        } else {
+            Log.warning("GeneratePlan: Unknown route source '{$this->routeSource}'. Cannot determine coordinates for weather.");
+            // Potentially allow proceeding without weather
+        }
 
-        // 2. Estimate Duration
+        if (!$coordinates && $this->routeSource !== 'gpx') { // For GPX, we might proceed without coords and use default weather
+            session()->flash('error', 'Could not determine starting location of the route for weather data.');
+            return;
+        }
+
+        // 2. Estimate Duration (uses $this->routeDistanceKm, $this->routeElevationM from mount)
         $distanceKm = $this->routeDistanceKm;
         $elevationM = $this->routeElevationM;
         $durationSeconds = $this->estimateDurationSeconds($distanceKm, $elevationM, $validatedData['planned_intensity']);
-        if ($durationSeconds <= 0) { /* ... error handling ... */ return; }
-        Log::info("Generating plan: Estimated duration {$durationSeconds}s for {$distanceKm}km / {$elevationM}m at intensity {$validatedData['planned_intensity']}");
+        if ($durationSeconds <= 0) { session()->flash('error', 'Invalid estimated duration.'); return; }
+        Log::info("Estimated duration {$durationSeconds}s for {$this->routeSource} route.");
 
-        // 3. Fetch Weather
-        Log::info("Generating plan: Fetching weather forecast");
-        $hourlyForecast = $weatherService->getHourlyForecast(
-            $coordinates['latitude'], $coordinates['longitude'], $startTime, $durationSeconds
-        );
-        if ($hourlyForecast === null) { /* ... error handling ... */ return; }
-        $weatherSummary = "Avg Temp: " . round(collect($hourlyForecast)->avg('temp_c') ?? 0, 1) . "°C, "
-            . "Avg Humidity: " . round(collect($hourlyForecast)->avg('humidity') ?? 0) . "%";
-        Log::info("Generating plan: Weather fetched. Summary: {$weatherSummary}");
 
-        // 4. Calculate Targets
-        Log::info("Generating plan: Calculating hourly targets");
-        $hourlyTargets = $calculator->calculateHourlyTargets(
-            $user, $validatedData['planned_intensity'], $hourlyForecast, $durationSeconds
-        );
-        Log::info("Generating plan: Hourly targets calculated.", ['count' => count($hourlyTargets)]);
+        // 3. Fetch Weather (pass null $coordinates if not found for GPX)
+        $hourlyForecast = null; // Initialize
+        $weatherSummary = "Weather data unavailable."; // Default summary
+
+        if ($coordinates) {
+            Log::info("Fetching weather forecast for coordinates: ", $coordinates);
+            $hourlyForecast = $weatherService->getHourlyForecast(
+                $coordinates['latitude'], $coordinates['longitude'], $startTime, $durationSeconds
+            );
+            if ($hourlyForecast !== null && !empty($hourlyForecast)) {
+                 $avgTemp = round(collect($hourlyForecast)->avg('temp_c') ?? 0, 1);
+                 $avgHumidity = round(collect($hourlyForecast)->avg('humidity') ?? 0);
+                 $weatherSummary = "Avg Temp: {$avgTemp}°C, Avg Humidity: {$avgHumidity}%";
+                 Log::info("Weather fetched: {$weatherSummary}");
+            } else {
+                 Log::warning("Failed to fetch weather forecast or forecast was empty. Plan will use default conditions.");
+                 // Keep $hourlyForecast as null
+            }
+        } else {
+            Log::warning("Skipping weather forecast due to missing coordinates for {$this->routeSource} route. Plan will use default conditions.");
+        }
+
+
+        // 4. Calculate Targets (NutritionCalculator MUST handle $hourlyForecast being potentially null)
+        $hourlyTargets = $calculator->calculateHourlyTargets($user, $validatedData['planned_intensity'], $hourlyForecast, $durationSeconds);
+        if (empty($hourlyTargets)) { session()->flash('error', 'Could not calculate nutrition targets.'); return; }
+        Log::info("Hourly targets calculated: " . count($hourlyTargets) . " target sets.");
 
         // 5. Fetch Pantry & Generate Schedule
-        Log::info("Generating plan: Fetching pantry products");
-        $pantryProducts = Product::whereNull('user_id')->orWhere('user_id', $user->id)->get();
-        if ($pantryProducts->isEmpty()) { /* ... error handling ... */ return; }
-        Log::info("Generating plan: Found {$pantryProducts->count()} products in combined pantry.");
+        $pantryProducts = Product::where(fn($q) => $q->whereNull('user_id')->orWhere('user_id', $user->id))->get();
+        if ($pantryProducts->isEmpty()) { session()->flash('error', 'No active products in pantry. Please add products.'); return; }
+        Log::info("Found {$pantryProducts->count()} active pantry products.");
 
-        Log::info("Generating plan: Generating nutrition schedule");
-        $scheduleItemsData = $generator->generateSchedule(
-            $user, $durationSeconds, $hourlyTargets, $pantryProducts
-        );
-        if (isset($scheduleItemsData[0]['error'])) { /* ... error handling ... */ return; }
-        Log::info("Generating plan: Schedule generated.", ['item_count' => count($scheduleItemsData)]);
+        $scheduleItemsData = $generator->generateSchedule($user, $durationSeconds, $hourlyTargets, $pantryProducts);
+        if (empty($scheduleItemsData)) { session()->flash('error', 'Could not generate a nutrition schedule (e.g., short duration or product mismatch).'); return; }
+        if (isset($scheduleItemsData[0]['error'])) { session()->flash('error', 'Schedule generation error: ' . $scheduleItemsData[0]['error']); return; }
+        Log::info("Nutrition schedule generated with " . count($scheduleItemsData) . " items.");
 
         // 6. Save Plan & Items
-        Log::info("Generating plan: Saving plan to database");
+        $newPlan = null;
         try {
-            $newPlan = null;
-            DB::transaction(function () use ( $user, $startTime, $validatedData, $durationSeconds, $distanceKm, $elevationM,
-            $calculator, $scheduleItemsData, $weatherSummary, &$newPlan) {
-
-
+            DB::transaction(function () use (
+                $user, $startTime, $validatedData, $durationSeconds, $calculator,
+                $scheduleItemsData, $weatherSummary, &$newPlan // Pass by reference
+            ) {
                 $estimatedPower = $calculator->estimateAveragePower($user, $validatedData['planned_intensity']);
                 $totalCarbs = collect($scheduleItemsData)->sum('calculated_carbs_g');
                 $totalFluid = collect($scheduleItemsData)->sum('calculated_fluid_ml');
                 $totalSodium = collect($scheduleItemsData)->sum('calculated_sodium_mg');
-                $newPlan = $user->plans()->create([
-                    'name' => 'Plan for ' . $this->routeName . ' on ' . $startTime->format('Y-m-d'),
-                    'strava_route_id' => $this->routeId,
-                    'strava_route_name' => $this->routeName,
+
+                $planData = [
+                    'name' => 'Plan for ' . $this->routeName . ' on ' . $startTime->format('M j, Y'),
+                    'user_id' => $user->id, // Explicitly set, though relationship method also does it
                     'planned_start_time' => $startTime,
                     'planned_intensity' => $validatedData['planned_intensity'],
                     'estimated_duration_seconds' => $durationSeconds,
-                    // 'estimated_distance_km' => round($distanceKm, 2), // REMOVE THIS LINE
-                    // 'estimated_elevation_m' => round($elevationM),   // REMOVE THIS LINE
                     'estimated_avg_power_watts' => $estimatedPower ? round($estimatedPower) : null,
                     'estimated_total_carbs_g' => round($totalCarbs),
                     'estimated_total_fluid_ml' => round($totalFluid),
                     'estimated_total_sodium_mg' => round($totalSodium),
                     'weather_summary' => $weatherSummary,
-                    // 'user_id' will be automatically handled by the relationship
-                ]);
+                    'source' => $this->routeSource, // Save the source
+                ];
+
+                // Add route-specific info only if it's a Strava route for now (or adapt for GPX display later)
+                if ($this->routeSource === 'strava') {
+                    $planData['strava_route_id'] = $this->routeId;
+                    $planData['strava_route_name'] = $this->routeName; // Already available from mount
+                }
+                 // For database schema that DOES NOT have estimated_distance_km and estimated_elevation_m on plans table
+                 // If they ARE in your schema, uncomment these:
+                // $planData['estimated_distance_km'] = $this->routeDistanceKm;
+                // $planData['estimated_elevation_m'] = $this->routeElevationM;
+                Log::critical("PLAN DATA TO BE SAVED:", $planData); // Use critical to make it stand out
+                $newPlan = Plan::create($planData); // Use Plan::create for clarity if not using relationship
+
+                if (!$newPlan) { throw new \Exception("Plan model creation failed inside transaction."); }
+                Log::info("Plan record created in transaction, ID: {$newPlan->id}");
 
                 if (!empty($scheduleItemsData)) {
                     $itemsToSave = array_map(function ($item) use ($newPlan) {
-                         // Make sure product_name is populated correctly here if using that strategy
-                         // Simplified version assuming generator returns needed keys:
-                        $productName = $item['product_name'] ?? null; // Get name if provided
-                         if (!$productName && isset($item['product_id'])) {
-                             // Fetch if absolutely necessary (less efficient)
-                             $product = Product::find($item['product_id']);
-                             $productName = $product?->name;
-                         }
-
-                         return [
-                            'plan_id' => $newPlan->id,
-                            'time_offset_seconds' => $item['time_offset_seconds'],
-                            'instruction_type' => $item['instruction_type'],
-                            'product_id' => $item['product_id'] ?? null,
-                             'product_name' => $productName, // Save the name
-                            'quantity_description' => $item['quantity_description'],
-                            'calculated_carbs_g' => $item['calculated_carbs_g'],
-                            'calculated_fluid_ml' => $item['calculated_fluid_ml'],
-                            'calculated_sodium_mg' => $item['calculated_sodium_mg'],
-                            'notes' => $item['notes'] ?? null,
-                            'created_at' => now(),
-                            'updated_at' => now(),
-                        ];
+                        // ... (item mapping - ensure product_name is handled) ...
+                        $productName = $item['product_name'] ?? null;
+                        if (!$productName && isset($item['product_id'])) {
+                            $product = Product::find($item['product_id']); $productName = $product?->name;
+                        }
+                        return ['plan_id' => $newPlan->id, /* ... other item fields ... */ 'product_name' => $productName, 'created_at' => now(), 'updated_at' => now(), 'calculated_carbs_g' => $item['calculated_carbs_g'] ?? 0, 'calculated_fluid_ml' => $item['calculated_fluid_ml'] ?? 0, 'calculated_sodium_mg' => $item['calculated_sodium_mg'] ?? 0, 'notes' => $item['notes'] ?? null, 'quantity_description' => $item['quantity_description'], 'instruction_type' => $item['instruction_type'], 'time_offset_seconds' => $item['time_offset_seconds'], 'product_id' => $item['product_id'] ?? null, ];
                     }, $scheduleItemsData);
                     $newPlan->items()->createMany($itemsToSave);
                 }
-                Log::info("Generating plan: Plan and items saved successfully.", ['plan_id' => $newPlan->id]);
-            });
+                Log::info("Plan transaction part succeeded for plan ID: {$newPlan->id}");
+            }); // End DB Transaction
 
-            // 7. Redirect
-            if ($newPlan) {
+            if ($newPlan && $newPlan->exists) {
                 session()->flash('message', 'Nutrition plan generated successfully!');
-                return redirect()->route('plans.show', $newPlan);
+                return redirect()->route('plans.show', $newPlan->id); // Pass ID or model instance
             } else {
-                throw new \Exception("Plan creation failed but transaction reported success.");
+                Log::error("Plan was not set or not persisted after transaction.", ['userId' => $user->id, 'newPlanId' => $newPlan?->id]);
+                session()->flash('error', 'Failed to finalize the plan after database operations. Please check logs.');
             }
-        } catch (\Exception $e) {
-            Log::error("Error saving plan for user {$user->id}: " . $e->getMessage(), ['exception' => $e]);
-            session()->flash('error', 'An error occurred while saving the plan. Please try again.');
+
+        } catch (\Throwable $e) {
+            Log::error("CRITICAL ERROR during plan generation/saving for user {$user->id}: " . $e->getMessage(), [
+                'exception_class' => get_class($e),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            session()->flash('error', 'A critical error occurred: ' . $e->getMessage());
         }
     }
 
-
     public function render()
     {
-        // TEMPORARY DEBUGGING - DO NOT KEEP THIS
-        if ($this->fetchedPolyline === null || $this->fetchedPolyline === '') {
-             Log::warning("PlanForm Render: fetchedPolyline is empty/null before re-fetch attempt.");
-             $user = Auth::user();
-             $stravaService = app(StravaService::class); // Resolve service here
-             $allRoutes = $stravaService->getUserRoutes($user);
-             if ($allRoutes !== null) {
-                 $routeDetails = collect($allRoutes)->firstWhere('id', $this->routeId);
-                 $this->fetchedPolyline = $routeDetails['summary_polyline'] ?? ''; // Default to empty string
-                 Log::info("PlanForm Render: Re-fetched polyline.", ['length' => strlen($this->fetchedPolyline)]);
-             }
-        }
-        // END TEMPORARY DEBUGGING
-
-        return view('livewire.plan-form')
-                ->layout('layouts.app');
+        return view('livewire.plan-form')->layout('layouts.app');
     }
 }

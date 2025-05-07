@@ -27,8 +27,14 @@ Route::middleware('auth')->group(function () {
 
     // --- Planning Flow ---
     Route::get('/plans/create/select-route', RouteSelector::class)->name('plans.create.select-route');
-    Route::get('/plans/create/form/{routeId}/{routeName}/{distance}/{elevation}', PlanForm::class)
-         ->name('plans.create.form');
+    Route::get('/plans/create/{routeId}/{routeName}/{distance}/{elevation}/{source?}/{startLat?}/{startLng?}', PlanForm::class)
+    ->name('plans.create.form')
+    ->where([ // Optional: Add constraints if needed
+        'distance' => '[0-9]+(\.[0-9][0-9]?)?', // Allow decimals for distance
+        'elevation' => '[0-9]+',
+        'startLat' => '-?[0-9]+(\.[0-9]+)?',
+        'startLng' => '-?[0-9]+(\.[0-9]+)?',
+    ]);
 
 
     // --- Plan Management ---

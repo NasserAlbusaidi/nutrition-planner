@@ -11,13 +11,15 @@ use Carbon\CarbonInterval; // For easier time formatting
 class PlanGenerator
 {
     // Configuration Constants
-    protected const INTERVAL_MINUTES = 15; // Base scheduling interval
-    protected const MAX_FLUID_PER_INTERVAL_ML = 600; // Sensible max fluid intake in 15 mins
-    protected const MAX_CARBS_PER_HOUR = 100; // User's max tolerable hourly carb rate (could be user-specific later)
-    protected const WATER_PER_GEL_ML = 200; // Recommended water with a gel/chew
-    protected const MIN_FLUID_SCHEDULE_ML = 150; // Minimum amount of fluid to schedule at once
-    protected const SODIUM_PRIORITY_THRESHOLD = 0.7; // How much of sodium need triggers priority (70%)
-    protected const FLUID_PRIORITY_THRESHOLD = 0.6; // How much of fluid need triggers priority (60%)
+    protected const INTERVAL_MINUTES = 15;
+    protected const MAX_FLUID_PER_INTERVAL_ML = 350; // Reduced from 600; 250-350ml in 15min is more realistic
+    protected const MAX_CARBS_PER_HOUR = 100; // User's max tolerable hourly carb rate
+    protected const WATER_PER_SOLID_ML = 200; // Recommended water with a gel/chew/bar
+    protected const MIN_FLUID_SCHEDULE_ML = 150;
+    protected const SODIUM_PRIORITY_THRESHOLD = 0.7;
+    protected const FLUID_PRIORITY_THRESHOLD = 0.6;
+    protected const MIN_CARBS_TO_SCHEDULE_G = 10; // Don't bother scheduling if carb need is less than this
+    protected const MAX_ITEMS_PER_INTERVAL = 2; // E.g., a drink and a gel, or two small items
 
     /**
      * Generate the nutrition plan schedule.
@@ -26,310 +28,300 @@ class PlanGenerator
      * @param int $durationSeconds
      * @param array $hourlyTargets // From NutritionCalculator: [['hour'=>int, 'carb_g'=>int, 'fluid_ml'=>int, 'sodium_mg'=>int], ...]
      * @param Collection $pantryProducts // Collection of user's Product models
-     * @return array Array of plan item data ready for DB insertion.
+     * @return array Array of plan item data ready for DB insertion or an error structure.
      */
     public function generateSchedule(User $user, int $durationSeconds, array $hourlyTargets, Collection $pantryProducts): array
     {
-        Log::info("PlanGenerator v2: generateSchedule START", [
+        Log::info("PlanGenerator v2 - Refactored: generateSchedule START", [
             'user_id' => $user->id, 'duration_sec' => $durationSeconds,
             'targets_count' => count($hourlyTargets), 'products_count' => $pantryProducts->count()
         ]);
-        if ($pantryProducts->isEmpty()) {
-             Log::warning("PlanGenerator v2: Pantry is empty. Cannot generate plan.");
-             // Maybe return an error indicator or empty array with a message?
-             return [['error' => 'Pantry is empty. Please add products.']]; // Example error structure
+
+        if ($durationSeconds <= 0 || empty($hourlyTargets)) {
+            Log::warning("PlanGenerator Refactor: Invalid duration or targets provided.", ['duration' => $durationSeconds, 'targets_count' => count($hourlyTargets)]);
+            return [['error' => 'Invalid activity duration or nutrition targets for plan generation.']];
         }
-        Log::debug("PlanGenerator v2: First pantry product sample.", ['product' => $pantryProducts->first()->toArray()]);
+        if ($pantryProducts->isEmpty()) {
+             Log::warning("PlanGenerator Refactor: Pantry is empty.");
+             return [['error' => 'Pantry is empty. Please add products.']];
+        }
 
         $schedule = [];
         $intervalSeconds = self::INTERVAL_MINUTES * 60;
-        $currentTimeOffset = 0; // Seconds into the activity
+        $currentTimeOffset = 0; // Represents the END time of the interval being considered
 
-        // --- Pre-process and Sort Pantry ---
+        // Pre-process pantry (assuming helper methods exist and work as discussed)
         $processedPantry = $this->preprocessPantry($pantryProducts);
-        // Add a conceptual "Plain Water" product
-        $processedPantry->push(new Product([
-             'id' => 'WATER', 'name' => 'Plain Water', 'type' => 'water',
-             'carbs_g' => 0, 'sodium_mg' => 0, 'serving_volume_ml' => self::MIN_FLUID_SCHEDULE_ML, // Represents a schedulable unit
-             'fluid_ml_per_serving' => self::MIN_FLUID_SCHEDULE_ML, // Actual fluid value
-             'carbs_per_100ml' => 0, 'sodium_per_100ml' => 0, // Concentrations
-             'sort_priority' => 99 // Lowest priority unless specifically needed
-        ]));
-        // Sort: Prioritize items that meet multiple needs (drinks), then fast carbs, then slower, then water
+        $processedPantry->push($this->getWaterProduct());
         $sortedPantry = $processedPantry->sortBy('sort_priority');
-        Log::info("PlanGenerator v2: Pantry preprocessed and sorted.", ['count' => $sortedPantry->count()]);
+        Log::info("PlanGenerator Refactor: Pantry preprocessed and sorted.", ['count' => $sortedPantry->count()]);
 
-        // --- Initialize Tracking Variables ---
-        $cumulativeTargets = ['carbs' => 0.0, 'fluid' => 0.0, 'sodium' => 0.0];
+        // Initialize Tracking Variables
         $cumulativeConsumed = ['carbs' => 0.0, 'fluid' => 0.0, 'sodium' => 0.0];
-        // Track consumption within rolling windows (e.g., last hour) for rate limiting
-        $consumptionHistory = []; // Store [time_offset, carbs, fluid, sodium] for recent items
+        $consumptionHistory = []; // Stores [time_offset_end_interval, carbs, fluid, sodium]
 
-        Log::info("PlanGenerator v2: Entering main scheduling loop.", ['total_intervals' => ceil($durationSeconds / $intervalSeconds)]);
+        // --- Main Loop (Iterating through intervals of the activity) ---
+        Log::info("PlanGenerator Refactor: Entering main scheduling loop.", ['total_intervals' => ceil($durationSeconds / $intervalSeconds)]);
 
-        // --- Main Scheduling Loop ---
         while ($currentTimeOffset < $durationSeconds) {
-            $intervalStartTime = $currentTimeOffset;
-            $currentTimeOffset += $intervalSeconds; // Schedule *at* the end of the interval
-            Log::info("PlanGenerator v2: LOOP ITERATION START. Time: " . $this->formatTime($currentTimeOffset));
+            $currentTimeOffset += $intervalSeconds; // Time at the END of the current interval
+            Log::info("PlanGenerator Refactor: ==== INTERVAL START ==== Considering interval ending @ " . $this->formatTime($currentTimeOffset));
 
-            // Calculate cumulative targets *up to this point*
             $cumulativeTargets = $this->calculateCumulativeTargets($hourlyTargets, $currentTimeOffset);
-
-            // Calculate current deficits
-            $needs = [
-                'carbs' => max(0, $cumulativeTargets['carbs'] - $cumulativeConsumed['carbs']),
-                'fluid' => max(0, $cumulativeTargets['fluid'] - $cumulativeConsumed['fluid']),
-                'sodium' => max(0, $cumulativeTargets['sodium'] - $cumulativeConsumed['sodium']),
-            ];
-
-            // Calculate consumption rates for the last hour (for capping)
-            $recentConsumption = $this->calculateRecentConsumption($consumptionHistory, $currentTimeOffset, 3600);
-
-             Log::debug("PlanGenerator v2: Interval State @ " . $this->formatTime($currentTimeOffset), [
-                'cumulative_targets' => array_map('round', $cumulativeTargets, [2]),
-                'cumulative_consumed' => array_map('round', $cumulativeConsumed, [2]),
-                'current_needs' => array_map('round', $needs, [2]),
-                'recent_consumption_1hr' => array_map('round', $recentConsumption, [2])
-             ]);
-
-            // --- Product Selection Logic ---
-            $productToSchedule = null;
-            $calculatedQuantity = 1.0; // Can be fraction or ml
-            $calculatedNutrition = ['carbs' => 0.0, 'fluid' => 0.0, 'sodium' => 0.0];
-            $instructionType = 'consume';
-            $quantityDescription = '1 serving';
-            $notes = '';
-            $scheduleWaterAlongside = false;
-
-            // Determine priority need (simplistic relative deficit for now)
-            $priorityNeed = $this->determinePriorityNeed($needs, $cumulativeTargets);
-            Log::debug("PlanGenerator v2: Priority Need determined: {$priorityNeed}");
-
-            // Iterate through sorted pantry to find the best fit for the current needs & context
-            foreach ($sortedPantry as $product) {
-                // Basic Check: Can this product potentially help?
-                if (($needs['carbs'] > 5 && ($product->carbs_g ?? 0) > 0) || // Need > 5g carbs
-                    ($needs['fluid'] > self::MIN_FLUID_SCHEDULE_ML * 0.5 && ($product->fluid_ml_per_serving ?? 0) > 0) || // Need > 75ml fluid
-                    ($needs['sodium'] > 20 && ($product->sodium_mg ?? 0) > 0)) // Need > 20mg sodium
-                {
-                     Log::debug("PlanGenerator v2: Considering Product ID: {$product->id} ({$product->name})");
-
-                    // --- Specific Logic per Product Type ---
-
-                    // 1. Drink Mixes (Prioritize if fluid/sodium need is high)
-                    if ($product->type === 'drink_mix' && ($priorityNeed === 'fluid' || $priorityNeed === 'sodium')) {
-                        if ($needs['fluid'] >= self::MIN_FLUID_SCHEDULE_ML) {
-                             // Calculate volume needed, capped by interval max and actual need
-                             $volumeToMakeMl = min(
-                                 $needs['fluid'],
-                                 self::MAX_FLUID_PER_INTERVAL_ML, // Max per interval
-                                 ($this->getMaxFluidPerHour() - $recentConsumption['fluid']) // Remaining hourly allowance
-                             );
-                             $volumeToMakeMl = max(self::MIN_FLUID_SCHEDULE_ML, $volumeToMakeMl); // Ensure minimum
-
-                             if ($volumeToMakeMl >= self::MIN_FLUID_SCHEDULE_ML) {
-                                 // Calculate nutrients from this volume
-                                 $calculatedNutrition['fluid'] = $volumeToMakeMl;
-                                 $calculatedNutrition['carbs'] = $volumeToMakeMl * ($product->carbs_per_100ml / 100);
-                                 $calculatedNutrition['sodium'] = $volumeToMakeMl * ($product->sodium_per_100ml / 100);
-
-                                 // Check Carb Cap
-                                 if (($recentConsumption['carbs'] + $calculatedNutrition['carbs']) <= self::MAX_CARBS_PER_HOUR) {
-                                     $productToSchedule = $product;
-                                     $quantityDescription = round($volumeToMakeMl) . "ml";
-                                     $instructionType = 'drink';
-                                     // $calculatedQuantity = $volumeToMakeMl / ($product->serving_volume_ml ?: 500); // Optional: calculate servings/scoops
-                                     $notes = "Mix {$product->name} and drink {$quantityDescription}";
-                                     Log::info("PlanGenerator v2: SELECTED Drink Mix: ID {$product->id}, Vol: {$quantityDescription}");
-                                     break; // Found a suitable drink
-                                 } else {
-                                     Log::debug("PlanGenerator v2: Drink mix skipped (ID: {$product->id}) - Exceeds carb cap.");
-                                 }
-                             }
-                        }
-                    }
-
-                    // 2. Gels / Chews (Prioritize if carb need is high)
-                    elseif (in_array($product->type, ['gel', 'chews']) && $priorityNeed === 'carbs') {
-                         if ($needs['carbs'] > ($product->carbs_g ?? 0) * 0.5) { // Need at least half a gel's worth
-                             // Check Carb Cap
-                             if (($recentConsumption['carbs'] + ($product->carbs_g ?? 0)) <= self::MAX_CARBS_PER_HOUR) {
-                                 $productToSchedule = $product;
-                                 $calculatedNutrition['carbs'] = $product->carbs_g ?? 0;
-                                 $calculatedNutrition['sodium'] = $product->sodium_mg ?? 0;
-                                 $calculatedNutrition['fluid'] = 0; // Gel itself provides negligible fluid
-                                 $calculatedQuantity = 1.0;
-                                 $quantityDescription = "1 serving";
-                                 $instructionType = 'consume';
-                                 $notes = "Consume 1 {$product->name}";
-                                 // Check if water should be scheduled alongside
-                                 if (($needs['fluid'] + $recentConsumption['fluid']) < $this->getMaxFluidPerHour()) {
-                                      $scheduleWaterAlongside = true;
-                                 }
-                                 Log::info("PlanGenerator v2: SELECTED Gel/Chew: ID {$product->id}");
-                                 break; // Found suitable gel/chew
-                             } else {
-                                 Log::debug("PlanGenerator v2: Gel/Chew skipped (ID: {$product->id}) - Exceeds carb cap.");
-                             }
-                         }
-                    }
-
-                    // 3. Bars / Real Food (Lower priority, maybe earlier in activity)
-                    elseif (in_array($product->type, ['bar', 'real_food']) && $priorityNeed === 'carbs') {
-                        // Simple logic: Use bars only if significant carb need exists and maybe not too late
-                        $activityProgress = $currentTimeOffset / $durationSeconds;
-                        if ($needs['carbs'] > ($product->carbs_g ?? 0) * 0.7 && $activityProgress < 0.75) { // Need significant carbs, not in the last 25%
-                             // Check Carb Cap
-                             if (($recentConsumption['carbs'] + ($product->carbs_g ?? 0)) <= self::MAX_CARBS_PER_HOUR) {
-                                 $productToSchedule = $product;
-                                 $calculatedNutrition['carbs'] = $product->carbs_g ?? 0;
-                                 $calculatedNutrition['sodium'] = $product->sodium_mg ?? 0;
-                                 $calculatedNutrition['fluid'] = 0;
-                                 $calculatedQuantity = 1.0;
-                                 $quantityDescription = "1 serving";
-                                 $instructionType = 'consume';
-                                 $notes = "Consume 1 {$product->name}";
-                                 Log::info("PlanGenerator v2: SELECTED Bar/Food: ID {$product->id}");
-                                 break; // Found suitable bar/food
-                             } else {
-                                 Log::debug("PlanGenerator v2: Bar/Food skipped (ID: {$product->id}) - Exceeds carb cap.");
-                             }
-                        }
-                    }
-
-                     // 4. Other/Fallback (e.g., capsules, less common items)
-                    elseif (!in_array($product->type, ['drink_mix', 'gel', 'chews', 'bar', 'real_food', 'water'])) {
-                          // General check if it meets *any* significant need without exceeding caps
-                          if ( ($needs['carbs'] > 5 && ($product->carbs_g ?? 0) > 0 && ($recentConsumption['carbs'] + ($product->carbs_g ?? 0)) <= self::MAX_CARBS_PER_HOUR) ||
-                               ($needs['sodium'] > 20 && ($product->sodium_mg ?? 0) > 0 /* No real sodium cap */) )
-                          {
-                               $productToSchedule = $product;
-                               $calculatedNutrition['carbs'] = $product->carbs_g ?? 0;
-                               $calculatedNutrition['sodium'] = $product->sodium_mg ?? 0;
-                               $calculatedNutrition['fluid'] = 0; // Assume negligible unless specified
-                               $calculatedQuantity = 1.0;
-                               $quantityDescription = "1 serving";
-                               $instructionType = 'consume';
-                               $notes = "Consume 1 {$product->name}";
-                               Log::info("PlanGenerator v2: SELECTED Other: ID {$product->id}");
-                               break; // Found suitable other item
-                          }
-                    }
-
-                } // End if product could potentially help
-            } // End foreach product loop
-
-            // --- Schedule Plain Water if Needed ---
-            $waterProduct = $sortedPantry->firstWhere('id', 'WATER'); // Find our conceptual water product
-            if ($waterProduct) { // Check if water product exists
-                $shouldScheduleWater = false;
-                $waterVolume = self::MIN_FLUID_SCHEDULE_ML; // Default amount
-
-                // Reason 1: Water explicitly needed alongside gel/chew
-                if ($scheduleWaterAlongside && !$productToSchedule) { // Only schedule if nothing else chosen OR combine logic needed
-                    $shouldScheduleWater = true;
-                    $waterVolume = self::WATER_PER_GEL_ML;
-                    Log::debug("PlanGenerator v2: Scheduling water alongside previously chosen item.");
-                }
-                // Reason 2: Fluid deficit remains high and no fluid source chosen
-                elseif (!$productToSchedule && $priorityNeed === 'fluid' && $needs['fluid'] >= self::MIN_FLUID_SCHEDULE_ML) {
-                     $shouldScheduleWater = true;
-                     $waterVolume = min($needs['fluid'], self::MAX_FLUID_PER_INTERVAL_ML, ($this->getMaxFluidPerHour() - $recentConsumption['fluid']));
-                     $waterVolume = max(self::MIN_FLUID_SCHEDULE_ML, $waterVolume); // Ensure minimum
-                     Log::debug("PlanGenerator v2: Scheduling water due to fluid deficit.");
-                }
-
-                // Check fluid caps before scheduling water
-                if ($shouldScheduleWater && $waterVolume >= self::MIN_FLUID_SCHEDULE_ML) {
-                     if (($recentConsumption['fluid'] + $waterVolume) <= $this->getMaxFluidPerHour()) {
-                         $productToSchedule = $waterProduct; // Schedule water
-                         $calculatedNutrition['fluid'] = $waterVolume;
-                         $calculatedNutrition['carbs'] = 0;
-                         $calculatedNutrition['sodium'] = 0;
-                         $quantityDescription = round($waterVolume) . "ml";
-                         $instructionType = 'drink';
-                         $notes = "Drink {$quantityDescription} Plain Water";
-                         Log::info("PlanGenerator v2: SELECTED Plain Water: Vol: {$quantityDescription}");
-                     } else {
-                         Log::debug("PlanGenerator v2: Plain Water skipped - Exceeds fluid cap.");
-                     }
-                }
-            } else {
-                 Log::warning("PlanGenerator v2: 'WATER' product not found in processed pantry.");
-            }
+            Log::debug("PlanGenerator Refactor: Cumulative Targets @ end of interval:", array_map(fn($n) => round($n,1), $cumulativeTargets));
+            Log::debug("PlanGenerator Refactor: Cumulative Consumed before this interval:", array_map(fn($n) => round($n,1), $cumulativeConsumed));
 
 
-            // --- Add Item to Schedule ---
-            if ($productToSchedule && ($calculatedNutrition['carbs'] > 0 || $calculatedNutrition['fluid'] > 0 || $calculatedNutrition['sodium'] > 0)) {
-                 $schedule[] = [
-                    'plan_id' => null, // Will be set when saving
-                    'time_offset_seconds' => $currentTimeOffset,
-                    'instruction_type' => $instructionType,
-                    'product_id' => $productToSchedule->id === 'WATER' ? null : $productToSchedule->id, // Store null for water ID
-                    'product_name_override' => $productToSchedule->id === 'WATER' ? $productToSchedule->name : null, // Store name for water
-                    'quantity_description' => $quantityDescription,
-                    'calculated_carbs_g' => round($calculatedNutrition['carbs'], 1),
-                    'calculated_fluid_ml' => round($calculatedNutrition['fluid']),
-                    'calculated_sodium_mg' => round($calculatedNutrition['sodium']),
-                    'notes' => $notes,
+            $itemsScheduledThisIntervalCount = 0;
+            $nutrientsAddedThisInterval = ['carbs' => 0.0, 'fluid' => 0.0, 'sodium' => 0.0]; // Track additions in this specific interval
+
+            // INNER LOOP: Try to schedule up to MAX_ITEMS_PER_INTERVAL
+            while ($itemsScheduledThisIntervalCount < self::MAX_ITEMS_PER_INTERVAL) {
+
+                // Calculate current needs *before* selecting next item for this interval
+                $needsForThisPass = [
+                    'carbs' => max(0, $cumulativeTargets['carbs'] - ($cumulativeConsumed['carbs'] + $nutrientsAddedThisInterval['carbs'])),
+                    'fluid' => max(0, $cumulativeTargets['fluid'] - ($cumulativeConsumed['fluid'] + $nutrientsAddedThisInterval['fluid'])),
+                    'sodium' => max(0, $cumulativeTargets['sodium'] - ($cumulativeConsumed['sodium'] + $nutrientsAddedThisInterval['sodium'])),
                 ];
 
-                // Update cumulative consumed values
-                $cumulativeConsumed['carbs'] += $calculatedNutrition['carbs'];
-                $cumulativeConsumed['fluid'] += $calculatedNutrition['fluid'];
-                $cumulativeConsumed['sodium'] += $calculatedNutrition['sodium'];
+                // If all significant needs met, exit inner loop for this interval
+                if ($needsForThisPass['carbs'] < self::MIN_CARBS_TO_SCHEDULE_G &&
+                    $needsForThisPass['fluid'] < self::MIN_FLUID_SCHEDULE_ML &&
+                    $needsForThisPass['sodium'] < 50) {
+                    Log::debug("PlanGenerator Refactor: Inner loop - Needs minimal. Ending pass for this interval.", $needsForThisPass);
+                    break; // Exit inner loop
+                }
 
-                // Add to consumption history for rate limiting
-                 $consumptionHistory[] = [
-                     'time' => $currentTimeOffset,
-                     'carbs' => $calculatedNutrition['carbs'],
-                     'fluid' => $calculatedNutrition['fluid'],
-                     'sodium' => $calculatedNutrition['sodium']
-                 ];
+                // Get recent consumption *up to the end of the PREVIOUS interval* + what's *already added this interval* for cap checking
+                $effectiveRecentConsumption = $this->calculateRecentConsumption($consumptionHistory, $currentTimeOffset, 3600); // Returns total in last hour WINDOW
+                // Add nutrients already added *this interval* to check caps for the *next* item
+                $consumptionForCapCheck = [
+                    'carbs' => $effectiveRecentConsumption['carbs'] + $nutrientsAddedThisInterval['carbs'],
+                    'fluid' => $effectiveRecentConsumption['fluid'] + $nutrientsAddedThisInterval['fluid'],
+                ];
 
-                Log::info("PlanGenerator v2: ADDED TO SCHEDULE @ " . $this->formatTime($currentTimeOffset) . ": " . $notes);
+                 Log::debug("PlanGenerator Refactor: Inner loop - Current Pass Needs:", array_map(fn($n)=>round($n,1), $needsForThisPass));
+                 Log::debug("PlanGenerator Refactor: Inner loop - Consumption for Cap Check (Rolling Hour + This Interval):", array_map(fn($n)=>round($n,1), $consumptionForCapCheck));
 
-            } else {
-                Log::info("PlanGenerator v2: No product scheduled for interval ending @ " . $this->formatTime($currentTimeOffset));
-            }
 
-             Log::info("PlanGenerator v2: LOOP ITERATION END. Time: " . $this->formatTime($currentTimeOffset));
+                $priorityNeed = $this->determinePriorityNeed($needsForThisPass, $cumulativeTargets, $cumulativeConsumed); // Determine priority based on current pass needs
+                Log::debug("PlanGenerator Refactor: Inner loop - Priority Need: {$priorityNeed}");
 
-        } // End while loop
 
-        Log::info("PlanGenerator v2: generateSchedule END", ['user' => $user->id, 'item_count' => count($schedule)]);
+                $bestProductChoiceThisPass = null;
+                $bestProductNutritionThisPass = ['carbs' => 0.0, 'fluid' => 0.0, 'sodium' => 0.0];
+                $bestProductNotesThisPass = '';
+                $bestProductQtyDescThisPass = '';
+                $bestProductInstructionThisPass = 'consume';
+                $foundSuitableProductThisPass = false;
+
+                // --- Iterate through sorted pantry ---
+                foreach ($sortedPantry as $product) {
+                    if ($product->id === 'WATER') continue; // Handle water separately
+
+                    $itemCarbs = 0; $itemFluid = 0; $itemSodium = 0;
+                    $canUseProduct = false; // Reset for each product
+
+                    // Try to schedule Drink Mixes if a priority or needed
+                    if ($product->type === Product::TYPE_DRINK_MIX) {
+                        $pCarbsPerStd = $product->carbs_g ?? 0;
+                        $pSodiumPerStd = $product->sodium_mg ?? 0;
+                        $pStdVolMl = $product->final_drink_volume_per_serving_ml; // Water needed for standard mix
+
+                        if ($pStdVolMl > 0 && $needsForThisPass['fluid'] >= self::MIN_FLUID_SCHEDULE_ML * 0.75) {
+                            $volToConsume = floor(min(
+                                $needsForThisPass['fluid'], // Need for this pass
+                                self::MAX_FLUID_PER_INTERVAL_ML - $nutrientsAddedThisInterval['fluid'], // Remaining allowance in interval
+                                ($this->getMaxFluidPerHour() - $consumptionForCapCheck['fluid']) // Remaining allowance in hourly window
+                            ));
+                            $volToConsume = max(self::MIN_FLUID_SCHEDULE_ML, $volToConsume);
+
+                            if ($volToConsume >= self::MIN_FLUID_SCHEDULE_ML) {
+                                $proportion = $volToConsume / $pStdVolMl;
+                                $itemCarbs = $pCarbsPerStd * $proportion;
+                                $itemSodium = $pSodiumPerStd * $proportion;
+                                $itemFluid = $volToConsume;
+
+                                if (($consumptionForCapCheck['carbs'] + $itemCarbs) <= $this->getMaxCarbsPerHour($user)) {
+                                     Log::info("PlanGenerator Refactor: -> Evaluating Drink Mix OK: ID {$product->id}, Vol {$volToConsume}ml");
+                                     $canUseProduct = true;
+                                } else { Log::debug("Drink Mix {$product->name} rejected: carb cap."); }
+                            }
+                        }
+                    }
+                    // Try to schedule Gels/Chews if priority or needed
+                    elseif (in_array($product->type, [Product::TYPE_GEL, Product::TYPE_ENERGY_CHEW]) && $needsForThisPass['carbs'] >= self::MIN_CARBS_TO_SCHEDULE_G) {
+                         $itemCarbs = $product->carbs_g ?? 0;
+                         $itemSodium = $product->sodium_mg ?? 0;
+                         $itemFluid = 0; // Assume negligible
+
+                         if (($consumptionForCapCheck['carbs'] + $itemCarbs) <= $this->getMaxCarbsPerHour($user)) {
+                              Log::info("PlanGenerator Refactor: -> Evaluating Gel/Chew OK: ID {$product->id}");
+                              $canUseProduct = true;
+                         } else { Log::debug("Gel/Chew {$product->name} rejected: carb cap."); }
+                    }
+                    // Try Bars/Real Food if priority or needed
+                    elseif (in_array($product->type, [Product::TYPE_ENERGY_BAR, Product::TYPE_REAL_FOOD]) && $needsForThisPass['carbs'] >= self::MIN_CARBS_TO_SCHEDULE_G) {
+                         // Maybe add stricter conditions, e.g., only early in the race, higher need threshold?
+                        $itemCarbs = $product->carbs_g ?? 0;
+                        $itemSodium = $product->sodium_mg ?? 0;
+                        $itemFluid = 0;
+
+                        if (($consumptionForCapCheck['carbs'] + $itemCarbs) <= $this->getMaxCarbsPerHour($user)) {
+                             Log::info("PlanGenerator Refactor: -> Evaluating Bar/Food OK: ID {$product->id}");
+                             $canUseProduct = true;
+                        } else { Log::debug("Bar/Food {$product->name} rejected: carb cap."); }
+                    }
+                    // Add Hydration Tablets logic if needed (primarily for sodium/fluid)
+                    elseif ($product->type === Product::TYPE_HYDRATION_TABLET && $needsForThisPass['sodium'] > 50){
+                        // Needs careful calculation - tablet adds sodium, but assumes fluid intake comes from the water it's dissolved in
+                        // You might schedule the tablet and trigger scheduling water alongside
+                    }
+
+                    // If this product is deemed suitable...
+                    if ($canUseProduct) {
+                         // Simple selection: Pick the first suitable product found in this pass.
+                         // More advanced: Calculate a score based on priorityNeed, nutrient fulfillment, etc.
+                         $bestProductChoiceThisPass = $product;
+                         $bestProductNutritionThisPass = ['carbs' => $itemCarbs, 'fluid' => $itemFluid, 'sodium' => $itemSodium];
+
+                         if ($product->type === Product::TYPE_DRINK_MIX) {
+                             $bestProductQtyDescThisPass = round($itemFluid) . "ml";
+                             $bestProductInstructionThisPass = 'drink';
+                             $proportion = $itemFluid / ($product->final_drink_volume_per_serving_ml ?: 1); // Avoid division by zero
+                             $unitsConsumed = round($proportion / ($product->units_per_serving ?? 1), 1); // Assume units_per_serving if exists
+                             $bestProductNotesThisPass = "Prepare {$product->name} as directed (e.g. {$product->serving_size_description}) and drink {$bestProductQtyDescThisPass}.";
+                         } else {
+                             $bestProductQtyDescThisPass = $product->serving_size_description ?? "1 serving";
+                             $bestProductInstructionThisPass = 'consume';
+                             $bestProductNotesThisPass = "Consume {$bestProductQtyDescThisPass} of {$product->name}";
+                         }
+                         Log::info("PlanGenerator Refactor: INNER PASS FOUND SUITABLE PRODUCT", ['id' => $product->id, 'name' => $product->name]);
+                         break; // Found the best item for this pass, break pantry loop
+                    }
+                } // --- End foreach $sortedPantry loop for this pass ---
+
+                // --- Add the selected item (if any) for this pass ---
+                if ($bestProductChoiceThisPass) {
+                    $isWater = ($bestProductChoiceThisPass->id === 'WATER');
+                    $schedule[] = [
+                        'time_offset_seconds' => $currentTimeOffset,
+                        'instruction_type' => $bestProductInstructionThisPass,
+                        'product_id' => $isWater ? null : $bestProductChoiceThisPass->id,
+                        'product_name_override' => $isWater ? $bestProductChoiceThisPass->name : null,
+                        'product_name' => $bestProductChoiceThisPass->name,
+                        'quantity_description' => $bestProductQtyDescThisPass,
+                        'calculated_carbs_g' => round($bestProductNutritionThisPass['carbs'], 1),
+                        'calculated_fluid_ml' => round($bestProductNutritionThisPass['fluid']),
+                        'calculated_sodium_mg' => round($bestProductNutritionThisPass['sodium']),
+                        'notes' => $bestProductNotesThisPass,
+                    ];
+                    $nutrientsAddedThisInterval['carbs'] += $bestProductNutritionThisPass['carbs'];
+                    $nutrientsAddedThisInterval['fluid'] += $bestProductNutritionThisPass['fluid'];
+                    $nutrientsAddedThisInterval['sodium'] += $bestProductNutritionThisPass['sodium'];
+                    $itemsScheduledThisIntervalCount++;
+                    Log::info("PlanGenerator Refactor: INNER PASS - ADDED ITEM to Schedule @ " . $this->formatTime($currentTimeOffset) . ": " . $bestProductNotesThisPass);
+
+                    // Decide if water should *still* be scheduled alongside solids just added
+                    if (!$isWater && $bestProductNutritionThisPass['fluid'] == 0 && $itemsScheduledThisIntervalCount < self::MAX_ITEMS_PER_INTERVAL) {
+                        $waterVolumeNeeded = self::WATER_PER_SOLID_ML;
+                        $currentFluidNeed = max(0, $cumulativeTargets['fluid'] - ($cumulativeConsumed['fluid'] + $nutrientsAddedThisInterval['fluid']));
+                        $hourlyFluidRemaining = $this->getMaxFluidPerHour() - ($consumptionForCapCheck['fluid'] + $bestProductNutritionThisPass['fluid']); // Update cap check consumption
+                        $waterToAdd = floor(min($waterVolumeNeeded, $currentFluidNeed, $hourlyFluidRemaining));
+
+                        if ($waterToAdd > self::MIN_FLUID_SCHEDULE_ML * 0.5) { // Add if at least half min amount
+                            $waterProduct = $sortedPantry->firstWhere('id', 'WATER');
+                            if ($waterProduct) {
+                                Log::info("PlanGenerator Refactor: Adding water alongside solid.", ['volume' => $waterToAdd]);
+                                // Schedule water immediately as the second item (breaks MAX_ITEMS_PER_INTERVAL rule here for simplicity)
+                                 $schedule[] = [ /* ... Water item details ... */ 'calculated_fluid_ml' => $waterToAdd ];
+                                 $nutrientsAddedThisInterval['fluid'] += $waterToAdd;
+                                 // IMPORTANT: Update $consumptionHistory immediately AFTER adding water
+                                 $consumptionHistory[] = ['time' => $currentTimeOffset, 'carbs' => 0, 'fluid' => $waterToAdd, 'sodium' => 0 ];
+                                 // Since water was just added, effectively break the inner loop? Or increment count?
+                                 $itemsScheduledThisIntervalCount++; // Counts as an item for the interval
+                            }
+                        }
+                    }
+
+                } else {
+                    Log::info("PlanGenerator Refactor: Inner pass - No suitable product found. Ending pass for interval.");
+                    break; // Exit inner while loop if no product found in this pass
+                }
+
+            } // --- End while (inner loop for max items per interval) ---
+
+
+            // --- Final Updates for the Interval ---
+            $cumulativeConsumed['carbs'] += $nutrientsAddedThisInterval['carbs'];
+            $cumulativeConsumed['fluid'] += $nutrientsAddedThisInterval['fluid'];
+            $cumulativeConsumed['sodium'] += $nutrientsAddedThisInterval['sodium'];
+
+            // Update consumption history using the nutrients *actually added* this interval
+             if ($nutrientsAddedThisInterval['carbs'] > 0 || $nutrientsAddedThisInterval['fluid'] > 0 || $nutrientsAddedThisInterval['sodium'] > 0) {
+                $consumptionHistory[] = [
+                    'time' => $currentTimeOffset, // Time at the END of the interval
+                    'carbs' => $nutrientsAddedThisInterval['carbs'],
+                    'fluid' => $nutrientsAddedThisInterval['fluid'],
+                    'sodium' => $nutrientsAddedThisInterval['sodium']
+                ];
+             }
+
+            Log::info("PlanGenerator Refactor: ==== INTERVAL END ==== Time: " . $this->formatTime($currentTimeOffset) . ". Cumulatives:", array_map(fn($n)=>round($n,1), $cumulativeConsumed));
+
+        } // --- End while ($currentTimeOffset < $durationSeconds) [Main Loop] ---
+
+        Log::info("PlanGenerator Refactor: generateSchedule END", ['user' => $user->id, 'item_count' => count($schedule)]);
         return $schedule;
     }
 
     // --- Helper Methods ---
 
     /**
+     * Get the maximum carbs per hour (could be user-specific later).
+     */
+    protected function getMaxCarbsPerHour(User $user = null): int // User might influence this later
+    {
+        // Could be a user profile setting "max_tolerable_carbs_per_hour"
+        return self::MAX_CARBS_PER_HOUR; // Using the class constant
+    }
+
+    /**
      * Prepares pantry items with calculated fields and sort priority.
      */
     protected function preprocessPantry(Collection $pantryProducts): Collection
-    {
-        return $pantryProducts->map(function (Product $product) {
-            // Calculate fluid per serving (often just serving volume, but could differ)
-            $product->fluid_ml_per_serving = $product->serving_volume_ml ?? 0;
+{
+    return $pantryProducts->map(function (Product $product) {
+        // 'fluid_ml_per_serving' is the fluid THIS PRODUCT *PROVIDES* in one described serving.
+        // For a gel/bar/food, this is usually 0 or very low.
+        // For a drink mix *powder*, its inherent fluid is 0. The fluid comes from water it's mixed with.
+        // For a ready-to-drink product, this would be its volume.
+        // Your $product->serving_size_ml is the key: for drink mixes, it's the water used for 1 serving of powder.
+        $product->final_drink_volume_per_serving_ml = $product->serving_size_ml ?? 0; // Water to mix one serving for DRINK MIXES
+        $product->provided_fluid_per_serving_ml = 0; // Default for solids/powders
 
-            // Calculate concentrations (avoid division by zero)
-            $servingVol = $product->serving_volume_ml ?: ($product->fluid_ml_per_serving ?: 0);
-            $product->carbs_per_100ml = ($servingVol > 0) ? (($product->carbs_g ?? 0) / $servingVol * 100) : 0;
-            $product->sodium_per_100ml = ($servingVol > 0) ? (($product->sodium_mg ?? 0) / $servingVol * 100) : 0;
+        if ($product->type === Product::TYPE_DRINK_MIX) {
+            $product->provided_fluid_per_serving_ml = $product->final_drink_volume_per_serving_ml; // If you consume 1 serving mixed, you get this much fluid.
+        } elseif (in_array($product->type, [Product::TYPE_PLAIN_WATER])) {
+            $product->provided_fluid_per_serving_ml = $product->serving_size_ml ?? 0;
+        }
+        // If you had a "Ready To Drink" type, it would be $product->serving_size_ml for its volume
 
-            // Assign sort priority
-            $product->sort_priority = match ($product->type) {
-                'drink_mix' => 1, // Highest priority as often meets multiple needs
-                'gel' => 2,
-                'chews' => 3,
-                'bar' => 4,
-                'real_food' => 5,
-                default => 6, // Other/Unknown
-            };
-            return $product;
-        });
-    }
+        // Sort priority
+        $product->sort_priority = match ($product->type) {
+            Product::TYPE_DRINK_MIX => 1,
+            Product::TYPE_HYDRATION_TABLET => 1, // Similar priority if primary need is electrolytes/fluid
+            Product::TYPE_GEL => 2,
+            Product::TYPE_ENERGY_CHEW => 3,
+            Product::TYPE_ENERGY_BAR => 4,
+            Product::TYPE_REAL_FOOD => 5,
+            Product::TYPE_PLAIN_WATER => 10, // Lower, but available
+            default => 6,
+        };
+        return $product;
+    });
+}
 
     /**
      * Calculates cumulative targets up to a given time offset.
@@ -444,6 +436,22 @@ class PlanGenerator
          // Could read from user profile, e.g., based on sweat rate estimates
          return 1000; // Default 1L/hour
      }
+
+    /**
+     * Get a conceptual "Plain Water" product.
+     */
+
+     protected function getWaterProduct(): Product
+    {
+        return new Product([
+             'id' => 'WATER', 'name' => 'Plain Water', 'type' => Product::TYPE_PLAIN_WATER, // Use constant
+             'carbs_g' => 0, 'sodium_mg' => 0,
+             'serving_size_ml' => self::MIN_FLUID_SCHEDULE_ML, // This is the 'unit' of water
+             'final_drink_volume_per_serving_ml' => self::MIN_FLUID_SCHEDULE_ML, // Water is ready-to-drink
+             'provided_fluid_per_serving_ml' => self::MIN_FLUID_SCHEDULE_ML,
+             'sort_priority' => 100 // Lowest priority
+        ]);
+    }
 
      /**
       * Format seconds into HH:MM:SS for logging.
