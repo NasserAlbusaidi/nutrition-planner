@@ -27,9 +27,10 @@ class Plan extends Model
         'estimated_total_fluid_ml',
         'estimated_total_sodium_mg',
         'weather_summary',
-        'source', // New attribute for source
-        'estimated_distance_km', // Optional: If you decide to add this
-        'estimated_elevation_m', // Optional: If you decide to add this
+        'source',
+        'estimated_distance_km',
+        'estimated_elevation_m',
+        'hourly_targets_data',
     ];
 
     /**
@@ -43,9 +44,10 @@ class Plan extends Model
 
     protected $casts = [
         'planned_start_time' => 'datetime',
-        'estimated_total_carbs_g' => 'float', // Match your DB (decimal(8,2))
-        'estimated_total_fluid_ml' => 'float', // Match your DB (decimal(8,2))
-        'estimated_total_sodium_mg' => 'float',// Match your DB (decimal(8,2))
+        'estimated_total_carbs_g' => 'float',
+        'estimated_total_fluid_ml' => 'float',
+        'estimated_total_sodium_mg' => 'float',
+        'hourly_targets_data' => 'array',
     ];
 
     /**

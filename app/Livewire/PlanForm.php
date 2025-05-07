@@ -252,7 +252,7 @@ class PlanForm extends Component
         try {
             DB::transaction(function () use (
                 $user, $startTime, $validatedData, $durationSeconds, $calculator,
-                $scheduleItemsData, $weatherSummary, &$newPlan // Pass by reference
+                $scheduleItemsData, $weatherSummary, $hourlyTargets, &$newPlan // Pass by reference
             ) {
                 $estimatedPower = $calculator->estimateAveragePower($user, $validatedData['planned_intensity']);
                 $totalCarbs = collect($scheduleItemsData)->sum('calculated_carbs_g');
@@ -269,6 +269,7 @@ class PlanForm extends Component
                     'estimated_total_carbs_g' => round($totalCarbs),
                     'estimated_total_fluid_ml' => round($totalFluid),
                     'estimated_total_sodium_mg' => round($totalSodium),
+                    'hourly_targets_data' => $hourlyTargets, // Store as JSON
                     'weather_summary' => $weatherSummary,
                     'source' => $this->routeSource, // Save the source
                 ];
