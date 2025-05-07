@@ -40,7 +40,19 @@ class UserProfile extends Component
         session()->flash('message', 'Profile successfully updated.');
 
         // Optional: Redirect or refresh data if needed
-        // return redirect()->route('profile.edit'); // Or just let Livewire re-render
+        return redirect()->route('profile.edit'); // Or just let Livewire re-render
+    }
+
+    public function disconnectStrava()
+    {
+        $user = Auth::user();
+        $user->strava_user_id = null;
+        $user->strava_access_token = null;
+        $user->strava_refresh_token = null;
+        $user->strava_token_expires_at = null;
+        $user->save();
+
+        session()->flash('message', 'Strava account successfully disconnected.');
     }
 
     public function mount()
