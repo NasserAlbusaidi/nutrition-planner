@@ -114,8 +114,7 @@
                     </div>
                 </div>
                 {{-- Estimated Totals Footer --}}
-                <div
-                    class="p-4 bg-slate-50 dark:bg-slate-900/50 border-t border-slate-200 dark:border-slate-700">
+                <div aria-atomic=""class="p-4 bg-slate-50 dark:bg-slate-900/50 border-t border-slate-200 dark:border-slate-700">
                     <div class="flex flex-wrap justify-center sm:justify-start gap-x-6 gap-y-3 items-center">
                         <span class="font-semibold text-slate-700 dark:text-slate-300 text-sm">Plan Totals:</span>
 
@@ -194,9 +193,12 @@
 
                     {{-- Display specific warnings from plan_notes (if any) --}}
                     @if (!empty($plan->plan_notes))
-                        <div class="mt-3 text-xs text-slate-600 dark:text-slate-400 bg-slate-100 dark:bg-slate-700/50 p-2 rounded-md">
-                            <p class="font-semibold mb-1">Additional Plan Notes:</p>
-                            <div style="white-space: pre-wrap;">{{ $plan->plan_notes }}</div>
+                        <div class="mt-3 text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-800/30 p-2 rounded-md flex items-start">
+                            <x-heroicon-s-exclamation-triangle class="h-4 w-4 mr-2 mt-0.5 flex-shrink-0" />
+                            <div>
+                                <p class="font-semibold mb-1">Additional Plan Notes:</p>
+                                <div style="white-space: pre-wrap;">{{ $plan->plan_notes }}</div>
+                            </div>
                         </div>
                     @endif
                 </div>
